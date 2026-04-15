@@ -55,6 +55,8 @@ def main() -> None:
     logger.info("  Robot ID:       %s", settings.robot_id)
     logger.info("  Mock hardware:  %s", settings.mock_hardware)
     logger.info("  Mock Foundry:   %s", settings.mock_foundry)
+    logger.info("  myCobot port:   %s @ %d", settings.mycobot_port, settings.mycobot_baud)
+    logger.info("  Camera index:   %d", settings.camera_device_index)
     logger.info("  Model path:     %s", settings.model_path)
     logger.info("  Capture rate:   %.1f Hz", 1.0 / settings.capture_interval_sec)
     logger.info("=" * 60)

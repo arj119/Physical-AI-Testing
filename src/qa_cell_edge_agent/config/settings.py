@@ -1,7 +1,13 @@
-"""Centralised configuration loaded from environment variables with sensible defaults."""
+"""Centralised configuration loaded from environment variables with sensible defaults.
+
+Hardware ports and camera index are auto-discovered at startup when not
+set via environment variables.  See ``drivers.discovery`` for details.
+"""
 
 import os
 from dataclasses import dataclass, field
+
+from qa_cell_edge_agent.drivers.discovery import find_camera_index, find_mycobot_port
 
 
 @dataclass(frozen=True)
@@ -51,7 +57,7 @@ class Settings:
         default_factory=lambda: float(os.environ.get("CAPTURE_INTERVAL_SEC", "1.0"))
     )
     camera_device_index: int = field(
-        default_factory=lambda: int(os.environ.get("CAMERA_DEVICE_INDEX", "0"))
+        default_factory=find_camera_index,
     )
     thumbnail_size: tuple = (64, 64)
     stream_push_timeout_sec: int = 5
@@ -80,7 +86,7 @@ class Settings:
 
     # ── Hardware ──────────────────────────────────────────────────────
     mycobot_port: str = field(
-        default_factory=lambda: os.environ.get("MYCOBOT_PORT", "/dev/ttyUSB0")
+        default_factory=lambda: find_mycobot_port() or "/dev/ttyUSB0",
     )
     mycobot_baud: int = field(
         default_factory=lambda: int(os.environ.get("MYCOBOT_BAUD", "115200"))

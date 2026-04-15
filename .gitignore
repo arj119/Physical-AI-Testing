@@ -125,6 +125,11 @@ celerybeat-schedule
 # dotenv
 .env
 
+# Model files (downloaded via scripts/download_model.py)
+/models/
+*.onnx
+*.engine
+
 # virtualenv
 .venv
 venv/

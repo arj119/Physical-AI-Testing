@@ -30,6 +30,10 @@ All serial I/O (arm + gripper) is consolidated in Process 2 via a shared
 `MyCobot280` connection singleton (`drivers/connection.py`) to avoid serial
 port conflicts.
 
+**Hardware auto-discovery:** The myCobot serial port (CP210x/CH340 USB VID:PID)
+and camera device index are auto-detected at startup. Set `MYCOBOT_PORT` or
+`CAMERA_DEVICE_INDEX` in `.env` only if you need to override discovery.
+
 ## Quick Start (Development / Mock Mode)
 
 ```bash
@@ -47,7 +51,10 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your Foundry URL + client credentials
 
-# 5. Test connectivity
+# 5. (Optional) Download a test model for real ONNX inference
+python scripts/download_model.py
+
+# 6. Test connectivity
 python scripts/test_connection.py
 
 # 6. Seed demo data (optional)

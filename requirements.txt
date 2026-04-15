@@ -8,11 +8,13 @@ pymycobot>=3.6.0,<5.0.0
 numpy>=1.24.0
 Pillow>=10.0.0
 
+# ONNX inference (development / CI — install for local model testing)
+onnxruntime>=1.16.0
+
 # Jetson-specific (pre-installed on JetPack or manual install)
 # torch  — use Jetson PyTorch wheel from NVIDIA
 # tensorrt  — pre-installed with JetPack
 # pycuda  — for TensorRT inference
-# onnxruntime  — optional, for ONNX backend during development
 
 # Testing
 pytest>=7.0.0
