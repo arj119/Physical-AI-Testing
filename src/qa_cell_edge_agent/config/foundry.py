@@ -86,7 +86,7 @@ class FoundryClients:
         """Return a ``requests.Session`` with the SDK auth token."""
         if self._session is None:
             self._session = requests.Session()
-        token = self.auth.get_token()
+        token = self.auth.get_token().access_token
         self._session.headers.update({
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",

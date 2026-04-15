@@ -31,15 +31,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("test-connection")
 
-# Action API names
-ACTION_CREATE_INSPECTION = "create-inspection-event"
-ACTION_UPDATE_ROBOT = "update-robot-status"
-ACTION_SEND_COMMAND = "send-command"
-ACTION_ACK_COMMAND = "acknowledge-command"
-ACTION_PUBLISH_MODEL = "publish-model"
-
-PASS = "\033[92m✓ PASS\033[0m"
-FAIL = "\033[91m✗ FAIL\033[0m"
+PASS = "\033[92m\u2713 PASS\033[0m"
+FAIL = "\033[91m\u2717 FAIL\033[0m"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -47,10 +40,10 @@ FAIL = "\033[91m✗ FAIL\033[0m"
 # ═══════════════════════════════════════════════════════════════════════
 
 def check_oauth(clients: FoundryClients) -> bool:
-    """Test 1: OAuth2 token acquisition."""
+    """Test 1: OAuth2 token acquisition via SDK auth."""
     try:
-        token = clients._refresh_token()
-        return bool(token)
+        token = clients.auth.get_token()
+        return bool(token.access_token)
     except Exception as exc:
         logger.error("OAuth2 failed: %s", exc)
         return False
@@ -58,17 +51,18 @@ def check_oauth(clients: FoundryClients) -> bool:
 
 def check_stream_push(clients: FoundryClients, stream_rid: str, name: str) -> bool:
     """Test 2/3: Push a single test record to a stream."""
-    record = {
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    record: Dict[str, Any] = {
         "readingId": f"test-{uuid.uuid4()}",
         "inspectionId": f"test-insp-{uuid.uuid4()}",
         "robotId": "test-connectivity",
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+        "timestamp": ts,
     }
     if "vision" in name.lower():
         record.update({
             "detectedClass": "widget_good",
             "confidence": 0.99,
-            "boundingBox": "[100, 100, 50, 50]",
+            "boundingBox": [100.0, 100.0, 50.0, 50.0],
             "inferenceTimeMs": 1,
             "modelVersion": "test",
             "thumbnailBase64": "",
@@ -84,58 +78,59 @@ def check_stream_push(clients: FoundryClients, stream_rid: str, name: str) -> bo
 
 
 def check_osdk_read(clients: FoundryClients) -> bool:
-    """Test 4: Read Robot objects via OSDK."""
+    """Test 4: Read Robot objects via SDK."""
     try:
-        result = clients.query_objects("robot", page_size=1)
-        return isinstance(result, list)
+        robots = clients.client.ontology.objects.Robot.take(1)
+        return isinstance(robots, list)
     except Exception as exc:
         logger.error("OSDK read failed: %s", exc)
         return False
 
 
 def check_osdk_write(clients: FoundryClients, settings: Settings) -> bool:
-    """Test 5: Create an InspectionEvent via OSDK and verify."""
-    test_id = f"test-insp-{uuid.uuid4()}"
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    return clients.apply_action(ACTION_CREATE_INSPECTION, {
-        "inspectionId": test_id,
-        "robotId": settings.robot_id,
-        "timestamp": ts,
-        "visionClass": "widget_good",
-        "visionConfidence": 0.99,
-        "gripLoad": 0.1,
-        "fusionDecision": "PASS",
-        "fusionReason": "connectivity_test",
-        "visionAgrees": True,
-        "modelVersion": "test",
-        "cycleTimeMs": 1,
-        "reviewStatus": "NOT_REQUIRED",
-    })
+    """Test 5: Create an InspectionEvent via SDK."""
+    try:
+        clients.client.ontology.actions.create_inspection_event(
+            inspection_id=f"test-insp-{uuid.uuid4()}",
+            robot_id=settings.robot_id,
+            timestamp=datetime.now(timezone.utc),
+            vision_class="widget_good",
+            vision_confidence=0.99,
+            grip_load=0.1,
+            fusion_decision="PASS",
+            fusion_reason="connectivity_test",
+            vision_agrees=True,
+            model_version="test",
+            cycle_time_ms=1,
+            review_status="NOT_REQUIRED",
+        )
+        return True
+    except Exception as exc:
+        logger.error("OSDK write failed: %s", exc)
+        return False
 
 
 def check_model_registry(clients: FoundryClients) -> bool:
-    """Test 6: Query ModelRegistry."""
+    """Test 6: Query ModelRegistry via SDK."""
     try:
-        result = clients.query_objects("model-registry", page_size=1)
-        return isinstance(result, list)
+        models = clients.client.ontology.objects.ModelRegistry.take(1)
+        return isinstance(models, list)
     except Exception as exc:
         logger.error("ModelRegistry query failed: %s", exc)
         return False
 
 
 def check_commands(clients: FoundryClients, settings: Settings) -> bool:
-    """Test 7: Poll OperatorCommands (expect 0 or more)."""
+    """Test 7: Poll OperatorCommands via SDK."""
     try:
-        result = clients.query_objects(
-            "operator-command",
-            where={
-                "type": "eq",
-                "field": "robotId",
-                "value": settings.robot_id,
-            },
-            page_size=1,
+        from physical_ai_qa_cell_sdk.ontology.search import OperatorCommandObjectType
+
+        commands = (
+            clients.client.ontology.objects.OperatorCommand
+            .where(OperatorCommandObjectType.robot_id.eq(settings.robot_id))
+            .take(1)
         )
-        return isinstance(result, list)
+        return isinstance(commands, list)
     except Exception as exc:
         logger.error("Command poll failed: %s", exc)
         return False
@@ -189,31 +184,30 @@ def run_checks(settings: Settings, clients: FoundryClients) -> bool:
 def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     """Generate and push realistic seed data to Foundry."""
 
-    print(f"\n🌱 Seeding {count} inspection events + supporting data...\n")
+    print(f"\n  Seeding {count} inspection events + supporting data...\n")
     now = datetime.now(timezone.utc)
 
-    # ── 1. Robot ──────────────────────────────────────────────────
-    print("  Creating Robot...")
-    clients.apply_action(ACTION_UPDATE_ROBOT, {
-        "robotId": settings.robot_id,
-        "status": "RUNNING",
-        "currentModelVersion": "v1.0.0",
-        "totalInspections": count,
-    })
+    # ── 1. Robot status ──────────────────────────────────────────────
+    print("  Updating Robot status...")
+    clients.client.ontology.actions.update_robot_status(
+        robot=settings.robot_id,
+        status="RUNNING",
+        current_model_version="v1.0.0",
+        total_inspections=count,
+    )
 
     # ── 2. Model Registry entry ───────────────────────────────────
-    print("  Creating ModelRegistry entry (v1.0.0)...")
-    clients.apply_action(ACTION_PUBLISH_MODEL, {
-        "modelId": f"model-{uuid.uuid4()}",
-        "version": "v1.0.0",
-        "status": "PUBLISHED",
-        "accuracy": 0.91,
-        "description": "YOLOv5-nano baseline — 3-class widget detector",
-        "artifactPath": "/models/yolov5n_widget_v1.onnx",
-    })
+    print("  Publishing model v1.0.0...")
+    clients.client.ontology.actions.publish_model(
+        model_id=f"model-{uuid.uuid4()}",
+        version="v1.0.0",
+        model_status="PUBLISHED",
+        accuracy=0.91,
+        model_description="YOLOv5-nano baseline — 3-class widget detector",
+        artifact_path="/models/yolov5n_widget_v1.onnx",
+    )
 
     # ── 3. Inspection events + stream readings ────────────────────
-    # Distribution: ~70% PASS, ~20% FAIL, ~10% REVIEW
     interval = timedelta(hours=2) / max(count, 1)
 
     vision_batch: List[Dict[str, Any]] = []
@@ -229,19 +223,16 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
         # Generate realistic correlated data
         roll = random.random()
         if roll < 0.70:
-            # PASS — high confidence, low grip load
             vision_class = "widget_good"
             confidence = round(min(0.99, max(0.5, random.gauss(0.92, 0.04))), 4)
             grip_load = round(min(0.99, max(0.01, random.gauss(0.25, 0.10))), 4)
             decision, reason, agrees = "PASS", "vision_pass + grip_normal", True
         elif roll < 0.90:
-            # FAIL — low confidence, high grip load
             vision_class = "widget_defect"
             confidence = round(min(0.99, max(0.1, random.gauss(0.82, 0.08))), 4)
             grip_load = round(min(0.99, max(0.3, random.gauss(0.78, 0.08))), 4)
             decision, reason, agrees = "FAIL", "vision_fail + grip_anomaly", True
         else:
-            # REVIEW — sensors disagree
             if random.random() < 0.5:
                 vision_class = "widget_good"
                 confidence = round(min(0.99, max(0.5, random.gauss(0.85, 0.06))), 4)
@@ -269,7 +260,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             "timestamp": ts_str,
             "detectedClass": vision_class,
             "confidence": confidence,
-            "boundingBox": f"[{x}, {y}, {w}, {h}]",
+            "boundingBox": [float(x), float(y), float(w), float(h)],
             "inferenceTimeMs": random.randint(25, 55),
             "modelVersion": "v1.0.0",
             "thumbnailBase64": "",
@@ -285,23 +276,23 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             "objectDetected": True,
         })
 
-        # InspectionEvent via OSDK
-        clients.apply_action(ACTION_CREATE_INSPECTION, {
-            "inspectionId": inspection_id,
-            "robotId": settings.robot_id,
-            "timestamp": ts_str,
-            "visionClass": vision_class,
-            "visionConfidence": confidence,
-            "gripLoad": grip_load,
-            "fusionDecision": decision,
-            "fusionReason": reason,
-            "visionAgrees": agrees,
-            "modelVersion": "v1.0.0",
-            "cycleTimeMs": cycle_time,
-            "reviewStatus": review_status,
-        })
+        # InspectionEvent via SDK
+        clients.client.ontology.actions.create_inspection_event(
+            inspection_id=inspection_id,
+            robot_id=settings.robot_id,
+            timestamp=ts,
+            vision_class=vision_class,
+            vision_confidence=confidence,
+            grip_load=grip_load,
+            fusion_decision=decision,
+            fusion_reason=reason,
+            vision_agrees=agrees,
+            model_version="v1.0.0",
+            cycle_time_ms=cycle_time,
+            review_status=review_status,
+        )
 
-        progress = f"  [{i + 1}/{count}] {inspection_id[:20]}... → {decision}"
+        progress = f"  [{i + 1}/{count}] {inspection_id[:20]}... -> {decision}"
         print(progress, end="\r")
 
     print(f"\n  Created {count} InspectionEvents via OSDK")
@@ -322,20 +313,20 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
 
     # ── 4. OperatorCommands ───────────────────────────────────────
     print("  Creating sample OperatorCommands...")
-    for cmd_type, status in [("PAUSE", "EXECUTED"), ("RESUME", "EXECUTED"), ("UPDATE_TOLERANCE", "PENDING")]:
+    for cmd_type, ack in [("PAUSE", True), ("RESUME", True), ("UPDATE_TOLERANCE", False)]:
         cmd_id = f"cmd-{uuid.uuid4()}"
         payload = json.dumps({"tolerance": 0.65}) if cmd_type == "UPDATE_TOLERANCE" else ""
-        clients.apply_action(ACTION_SEND_COMMAND, {
-            "commandId": cmd_id,
-            "robotId": settings.robot_id,
-            "commandType": cmd_type,
-            "payload": payload,
-        })
-        if status == "EXECUTED":
-            clients.apply_action(ACTION_ACK_COMMAND, {
-                "commandId": cmd_id,
-                "status": "EXECUTED",
-            })
+        clients.client.ontology.actions.send_command(
+            robot=settings.robot_id,
+            command_type=cmd_type,
+            command_id=cmd_id,
+            payload=payload if payload else None,
+        )
+        if ack:
+            clients.client.ontology.actions.acknowledge_command(
+                command=cmd_id,
+                new_status="EXECUTED",
+            )
 
     # ── Summary ───────────────────────────────────────────────────
     pass_count = int(count * 0.70)
@@ -343,7 +334,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     review_count = count - pass_count - fail_count
 
     print("\n" + "=" * 60)
-    print("  🌱 Seed Data Complete!")
+    print("  Seed Data Complete!")
     print(f"    Robot:            {settings.robot_id} (RUNNING)")
     print(f"    Model:            v1.0.0 (PUBLISHED)")
     print(f"    Inspections:      {count} total")
@@ -374,7 +365,7 @@ def main() -> None:
 
     ok = run_checks(settings, clients)
     if not ok:
-        print("⚠️  Fix connectivity issues before seeding data.")
+        print("  Fix connectivity issues before seeding data.")
         sys.exit(1)
 
     if args.seed:
