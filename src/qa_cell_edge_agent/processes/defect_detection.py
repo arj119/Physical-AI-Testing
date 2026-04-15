@@ -20,6 +20,7 @@ from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
 from qa_cell_edge_agent.drivers.arm import Arm
 from qa_cell_edge_agent.drivers.gripper import Gripper
+from qa_cell_edge_agent.drivers.transforms import CameraTransform
 from qa_cell_edge_agent.fusion.engine import FusionEngine
 from qa_cell_edge_agent.models.inference import ModelInference
 
@@ -70,6 +71,7 @@ def run_defect_detection(
         baud=settings.mycobot_baud,
         mock=settings.mock_hardware,
     )
+    cam_transform = CameraTransform()
     state = RobotState()
 
     logger.info("defect_detection started — robot=%s", settings.robot_id)
@@ -135,6 +137,17 @@ def run_defect_detection(
             # ── Run inference ─────────────────────────────────────
             result = model.infer(item["frame"])
 
+            # ── Compute dynamic pick target from bounding box ─────
+            pick_target = None
+            if cam_transform.is_calibrated and result.bounding_box:
+                try:
+                    bbox = json.loads(result.bounding_box)
+                    cx = int(bbox[0] + bbox[2] / 2)
+                    cy = int(bbox[1] + bbox[3] / 2)
+                    pick_target = cam_transform.pixel_to_robot(cx, cy)
+                except (json.JSONDecodeError, IndexError, TypeError) as exc:
+                    logger.warning("Could not compute pick target: %s", exc)
+
             # ── Sensor fusion ─────────────────────────────────────
             fusion_result = fusion.decide(
                 vision_class=result.detected_class,
@@ -143,7 +156,7 @@ def run_defect_detection(
             )
 
             # ── Sort part ─────────────────────────────────────────
-            arm.pick_and_place(fusion_result.decision, gripper)
+            arm.pick_and_place(fusion_result.decision, gripper, pick_target)
 
             cycle_time_ms = int((time.monotonic() - cycle_start) * 1000)
 

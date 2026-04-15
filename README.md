@@ -115,11 +115,31 @@ Thresholds are configurable via `.env` and can be updated at runtime via the
 ## Pick-and-Place Sequence
 
 ```
-HOME → PICK → close gripper → BIN (PASS/FAIL/REVIEW) → release gripper → HOME
+HOME → PICK (fixed or dynamic) → close gripper → BIN (PASS/FAIL/REVIEW) → release gripper → HOME
 ```
 
 The arm always returns to HOME before moving to PICK to ensure a safe,
 predictable path. Bin selection is driven by the fusion decision.
+
+### Vision-Guided Picking (non-identical placement)
+
+When camera calibration is available (`drivers/camera_calibration.json`), the
+arm computes a dynamic pick position from the bounding box detected by the
+vision model, converting pixel coordinates to robot Cartesian coordinates via
+either a homography (planar) or full hand-eye transform.
+
+If the computed position is outside the 280mm workspace, the arm falls back to
+the fixed PICK waypoint and logs a warning.
+
+**Calibration:**
+
+```bash
+# Homography (recommended for flat surfaces — simpler setup)
+python scripts/calibrate_camera.py --method homography --points 6
+
+# Full hand-eye (for 3D picking — requires ArUco marker on end-effector)
+python scripts/calibrate_camera.py --method handeye --points 12
+```
 
 ## Testing
 

@@ -17,6 +17,7 @@ from qa_cell_edge_agent.drivers.connection import get_connection
 
 if TYPE_CHECKING:
     from qa_cell_edge_agent.drivers.gripper import Gripper
+    from qa_cell_edge_agent.drivers.transforms import PickTarget
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,11 @@ class Arm:
             logger.info("Arm running in MOCK mode")
         else:
             logger.info("Arm connected on %s @ %d", port, baud)
+            try:
+                self._mc.set_vision_mode(1)
+                logger.info("Vision mode enabled (posture flip prevention)")
+            except Exception:
+                logger.debug("set_vision_mode not supported on this firmware")
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -108,15 +114,58 @@ class Arm:
         self._mc.send_angles(wp.angles, wp.speed)
         self._wait_until_stopped()
 
-    def pick_and_place(self, decision: str, gripper: Gripper) -> None:
+    def go_to_coords(self, coords: List[float], speed: int = 50) -> None:
+        """Move to a Cartesian position using linear interpolation.
+
+        Parameters
+        ----------
+        coords : list
+            ``[x, y, z, rx, ry, rz]`` in mm and degrees (base frame).
+        speed : int
+            Movement speed 1-100.
+        """
+        if self.mock:
+            logger.info("[MOCK] Arm → coords %s", coords)
+            time.sleep(0.3)
+            return
+        self._mc.send_coords(coords, speed, mode=1)  # mode=1 = linear
+        self._wait_until_stopped()
+
+    def pick_and_place(
+        self,
+        decision: str,
+        gripper: Gripper,
+        pick_target: Optional[PickTarget] = None,
+    ) -> None:
         """Execute a full pick → sort cycle for the given fusion decision.
 
-        Sequence: HOME → PICK → close gripper → BIN → release gripper → HOME
+        Sequence: HOME → PICK (fixed or dynamic) → close gripper → BIN →
+                  release gripper → HOME
+
+        Parameters
+        ----------
+        decision : str
+            Fusion decision: "PASS", "FAIL", or "REVIEW".
+        gripper : Gripper
+            Gripper driver instance.
+        pick_target : PickTarget, optional
+            If provided and reachable, uses Cartesian coords for the pick
+            position instead of the fixed PICK waypoint.
         """
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
         self.go_to("HOME")
-        self.go_to("PICK")
+        if pick_target and pick_target.reachable:
+            logger.info(
+                "Dynamic pick at (%.1f, %.1f, %.1f) — %.1f mm from base",
+                pick_target.coords[0], pick_target.coords[1],
+                pick_target.coords[2], pick_target.distance_from_base,
+            )
+            self.go_to_coords(pick_target.coords)
+        else:
+            if pick_target and not pick_target.reachable:
+                logger.warning("Pick target unreachable — using fixed PICK waypoint")
+            self.go_to("PICK")
         gripper.close_gripper()
         self.go_to(bin_name)
         gripper.release()
