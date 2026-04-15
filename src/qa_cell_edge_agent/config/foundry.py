@@ -1,11 +1,16 @@
-"""Foundry client factories — OSDK for Ontology actions, requests.Session for stream push."""
+"""Foundry clients — typed OSDK via ``physical_ai_qa_cell_sdk`` for ontology
+actions and object queries, raw ``requests.Session`` for stream push.
+
+The SDK's ``ConfidentialClientAuth`` manages OAuth2 token refresh automatically.
+The same auth token is reused for stream push via ``auth.get_token()``.
+"""
 
 from __future__ import annotations
 
+import json
 import logging
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import requests
 
@@ -13,66 +18,104 @@ from qa_cell_edge_agent.config.settings import Settings
 
 logger = logging.getLogger(__name__)
 
+OSDK_SCOPES = [
+    "api:use-ontologies-read",
+    "api:use-ontologies-write",
+    "api:use-streams-read",
+    "api:use-streams-write",
+    "api:use-mediasets-read",
+    "api:use-mediasets-write",
+]
 
-@dataclass
-class FoundryClients:
-    """Lazy-initialised Foundry clients that share a single OAuth2 token."""
+# Lazy imports — avoid import errors when SDK isn't installed (e.g. in tests)
+_FoundryClient = None
+_ConfidentialClientAuth = None
 
-    settings: Settings
-    _token: Optional[str] = None
-    _token_expiry: float = 0.0
-    _session: Optional[requests.Session] = None
 
-    # ── OAuth2 ────────────────────────────────────────────────────────
-
-    def _refresh_token(self) -> str:
-        """Obtain or refresh an OAuth2 bearer token via client_credentials grant."""
-        if self._token and time.time() < self._token_expiry - 30:
-            return self._token
-
-        resp = requests.post(
-            f"{self.settings.foundry_url}/multipass/api/oauth2/token",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.settings.client_id,
-                "client_secret": self.settings.client_secret,
-            },
-            timeout=10,
+def _ensure_sdk():
+    global _FoundryClient, _ConfidentialClientAuth
+    if _FoundryClient is None:
+        from physical_ai_qa_cell_sdk import (
+            ConfidentialClientAuth,
+            FoundryClient,
         )
-        resp.raise_for_status()
-        body = resp.json()
-        self._token = body["access_token"]
-        self._token_expiry = time.time() + body.get("expires_in", 3600)
-        logger.info("OAuth2 token refreshed, expires in %ss", body.get("expires_in"))
-        return self._token
+        _FoundryClient = FoundryClient
+        _ConfidentialClientAuth = ConfidentialClientAuth
+
+
+class FoundryClients:
+    """Lazy-initialised Foundry clients that share a single OAuth2 identity."""
+
+    def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self._auth = None
+        self._client = None
+        self._session: Optional[requests.Session] = None
+
+    # ── SDK auth + client ────────────────────────────────────────────
+
+    @property
+    def auth(self):
+        """``ConfidentialClientAuth`` with auto-refresh."""
+        if self._auth is None:
+            _ensure_sdk()
+            self._auth = _ConfidentialClientAuth(
+                client_id=self.settings.client_id,
+                client_secret=self.settings.client_secret,
+                hostname=self.settings.foundry_url,
+                should_refresh=True,
+                scopes=OSDK_SCOPES,
+            )
+        return self._auth
+
+    @property
+    def client(self):
+        """Typed OSDK ``FoundryClient`` for actions and object queries."""
+        if self._client is None:
+            _ensure_sdk()
+            self._client = _FoundryClient(
+                auth=self.auth,
+                hostname=self.settings.foundry_url,
+            )
+        return self._client
+
+    # ── Authenticated session for stream push ────────────────────────
 
     @property
     def session(self) -> requests.Session:
-        """Return an authenticated requests.Session (token auto-refreshed)."""
+        """Return a ``requests.Session`` with the SDK auth token."""
         if self._session is None:
             self._session = requests.Session()
-        self._session.headers.update(
-            {"Authorization": f"Bearer {self._refresh_token()}"}
-        )
+        token = self.auth.get_token()
+        self._session.headers.update({
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        })
         return self._session
 
-    # ── Stream push ───────────────────────────────────────────────────
+    # ── Stream push (v2 high-scale streams API) ──────────────────────
 
-    def push_to_stream(self, stream_rid: str, records: list[Dict[str, Any]]) -> bool:
-        """Push one or more JSON records to a Foundry Stream.
+    def push_to_stream(
+        self,
+        stream_rid: str,
+        records: List[Dict[str, Any]],
+    ) -> bool:
+        """Push records to a Foundry v2 high-scale stream.
 
         Returns True on success, False on failure (after retries).
         """
         url = (
-            f"{self.settings.foundry_url}/stream-proxy/api/streams"
-            f"/{stream_rid}/publishRecords"
+            f"{self.settings.foundry_url}/api/v2/highScale/streams/datasets"
+            f"/{stream_rid}/streams/master/publishRecords?preview=true"
         )
-        payload = {"records": [{"value": r} for r in records]}
+        payload = {"records": records}
 
         for attempt in range(1, self.settings.stream_retry_count + 1):
             try:
                 resp = self.session.post(
-                    url, json=payload, timeout=self.settings.stream_push_timeout_sec
+                    url,
+                    data=json.dumps(payload),
+                    timeout=self.settings.stream_push_timeout_sec,
                 )
                 resp.raise_for_status()
                 return True
@@ -86,49 +129,3 @@ class FoundryClients:
                 )
                 time.sleep(min(2**attempt, 10))
         return False
-
-    # ── OSDK helpers ──────────────────────────────────────────────────
-
-    def apply_action(self, action_type_rid: str, params: Dict[str, Any]) -> bool:
-        """Execute an Ontology action via the OSDK REST API.
-
-        Returns True on success, False on failure.
-        """
-        url = (
-            f"{self.settings.foundry_url}/api/v2/ontologies"
-            f"/ri.ontology.main.ontology.8d41bc1c-890d-4702-972b-98035f877b96"
-            f"/actions/{action_type_rid}/apply"
-        )
-        try:
-            resp = self.session.post(url, json={"parameters": params}, timeout=10)
-            resp.raise_for_status()
-            return True
-        except requests.RequestException as exc:
-            logger.error("Action %s failed: %s", action_type_rid, exc)
-            return False
-
-    def query_objects(
-        self,
-        object_type: str,
-        where: Optional[Dict[str, Any]] = None,
-        order_by: Optional[str] = None,
-        page_size: int = 100,
-    ) -> list[Dict[str, Any]]:
-        """Load objects from the Ontology via the OSDK REST API."""
-        url = (
-            f"{self.settings.foundry_url}/api/v2/ontologies"
-            f"/ri.ontology.main.ontology.8d41bc1c-890d-4702-972b-98035f877b96"
-            f"/objects/{object_type}/search"
-        )
-        body: Dict[str, Any] = {"pageSize": page_size}
-        if where:
-            body["where"] = where
-        if order_by:
-            body["orderBy"] = {"fields": [{"field": order_by, "direction": "desc"}]}
-        try:
-            resp = self.session.post(url, json=body, timeout=10)
-            resp.raise_for_status()
-            return resp.json().get("data", [])
-        except requests.RequestException as exc:
-            logger.error("Object query for %s failed: %s", object_type, exc)
-            return []

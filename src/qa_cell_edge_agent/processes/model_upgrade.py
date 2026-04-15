@@ -67,20 +67,26 @@ def _check_and_upgrade(
     """
 
     # ── 1. Query ModelRegistry for PUBLISHED models ───────────────
-    models = clients.query_objects(
-        "model-registry",
-        where={"type": "eq", "field": "status", "value": "PUBLISHED"},
-        order_by="publishedAt",
-    )
+    from physical_ai_qa_cell_sdk.ontology.search import ModelRegistryObjectType
+
+    try:
+        models = (
+            clients.client.ontology.objects.ModelRegistry
+            .where(ModelRegistryObjectType.status.eq("PUBLISHED"))
+            .order_by(ModelRegistryObjectType.published_at.desc())
+            .take(1)
+        )
+    except Exception as exc:
+        logger.error("Failed to query ModelRegistry: %s", exc)
+        return None
 
     if not models:
         logger.debug("No published models found")
         return None
 
     latest = models[0]
-    props = latest.get("properties", latest)
-    latest_version = props.get("version", "")
-    artifact_path = props.get("artifactPath", "")
+    latest_version = latest.version or ""
+    artifact_path = latest.artifact_path or ""
 
     if latest_version <= current_version:
         logger.debug("Already on latest model %s", current_version)
@@ -118,10 +124,14 @@ def _check_and_upgrade(
     logger.info("Reload signal sent to defect_detection")
 
     # ── 6. Update robot status with new version ───────────────────
-    clients.apply_action("update-robot-status", {
-        "robotId": settings.robot_id,
-        "currentModelVersion": latest_version,
-    })
+    try:
+        clients.client.ontology.actions.update_robot_status(
+            robot=settings.robot_id,
+            status="RUNNING",
+            current_model_version=latest_version,
+        )
+    except Exception as exc:
+        logger.error("Failed to update robot status: %s", exc)
 
     logger.info("Model upgrade complete: %s → %s", current_version, latest_version)
     return latest_version

@@ -97,7 +97,7 @@ def _run_one_cycle(
         # authoritative InspectionEvent.
         "detectedClass": "pending",
         "confidence": 0.0,
-        "boundingBox": "",
+        "boundingBox": [],
         "inferenceTimeMs": 0,
         "modelVersion": "",
         "thumbnailBase64": thumbnail_b64,

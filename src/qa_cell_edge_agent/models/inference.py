@@ -47,7 +47,7 @@ class InferenceResult:
 
     detected_class: str    # one of CLASS_NAMES
     confidence: float      # [0, 1]
-    bounding_box: str      # JSON "[x, y, w, h]"
+    bounding_box: List[float]  # [x, y, w, h]
     inference_time_ms: int # wall-clock inference duration
 
 
@@ -186,7 +186,7 @@ class ModelInference:
             return InferenceResult(
                 detected_class="widget_unknown",
                 confidence=0.0,
-                bounding_box="[0, 0, 0, 0]",
+                bounding_box=[0.0, 0.0, 0.0, 0.0],
                 inference_time_ms=0,
             )
 
@@ -221,7 +221,7 @@ class ModelInference:
         return InferenceResult(
             detected_class=detected_class,
             confidence=round(float(conf), 4),
-            bounding_box=f"[{int(x1)}, {int(y1)}, {int(w)}, {int(h)}]",
+            bounding_box=[float(x1), float(y1), float(w), float(h)],
             inference_time_ms=0,
         )
 
@@ -247,7 +247,7 @@ class ModelInference:
         return InferenceResult(
             detected_class=cls,
             confidence=conf,
-            bounding_box=f"[{x}, {y}, {w}, {h}]",
+            bounding_box=[float(x), float(y), float(w), float(h)],
             inference_time_ms=random.randint(25, 60),
         )
 

@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime, timezone
 from multiprocessing import Event, Queue
 from typing import Optional
 
@@ -25,11 +26,6 @@ from qa_cell_edge_agent.fusion.engine import FusionEngine
 from qa_cell_edge_agent.models.inference import ModelInference
 
 logger = logging.getLogger(__name__)
-
-# Action type API names (used with the v2 apply endpoint)
-ACTION_CREATE_INSPECTION = "create-inspection-event"
-ACTION_UPDATE_ROBOT = "update-robot-status"
-ACTION_ACK_COMMAND = "acknowledge-command"
 
 
 class RobotState:
@@ -141,11 +137,11 @@ def run_defect_detection(
             pick_target = None
             if cam_transform.is_calibrated and result.bounding_box:
                 try:
-                    bbox = json.loads(result.bounding_box)
+                    bbox = result.bounding_box  # list[float]
                     cx = int(bbox[0] + bbox[2] / 2)
                     cy = int(bbox[1] + bbox[3] / 2)
                     pick_target = cam_transform.pixel_to_robot(cx, cy)
-                except (json.JSONDecodeError, IndexError, TypeError) as exc:
+                except (IndexError, TypeError) as exc:
                     logger.warning("Could not compute pick target: %s", exc)
 
             # ── Sensor fusion ─────────────────────────────────────
@@ -166,20 +162,23 @@ def run_defect_detection(
                 else "NOT_REQUIRED"
             )
             if not settings.mock_foundry:
-                clients.apply_action(ACTION_CREATE_INSPECTION, {
-                    "inspectionId": item["inspection_id"],
-                    "robotId": settings.robot_id,
-                    "timestamp": item["timestamp"],
-                    "visionClass": result.detected_class,
-                    "visionConfidence": result.confidence,
-                    "gripLoad": grip_data.normalized_load,
-                    "fusionDecision": fusion_result.decision,
-                    "fusionReason": fusion_result.reason,
-                    "visionAgrees": fusion_result.vision_agrees,
-                    "modelVersion": model.version,
-                    "cycleTimeMs": cycle_time_ms,
-                    "reviewStatus": review_status,
-                })
+                ts = datetime.fromisoformat(
+                    item["timestamp"].replace("Z", "+00:00")
+                )
+                clients.client.ontology.actions.create_inspection_event(
+                    inspection_id=item["inspection_id"],
+                    robot_id=settings.robot_id,
+                    timestamp=ts,
+                    vision_class=result.detected_class,
+                    vision_confidence=result.confidence,
+                    grip_load=grip_data.normalized_load,
+                    fusion_decision=fusion_result.decision,
+                    fusion_reason=fusion_result.reason,
+                    vision_agrees=fusion_result.vision_agrees,
+                    model_version=model.version,
+                    cycle_time_ms=cycle_time_ms,
+                    review_status=review_status,
+                )
             else:
                 logger.debug(
                     "[MOCK] InspectionEvent %s → %s (%s)",
@@ -218,23 +217,24 @@ def _poll_commands(
     if settings.mock_foundry:
         return
 
-    commands = clients.query_objects(
-        "operator-command",
-        where={
-            "type": "and",
-            "value": [
-                {"type": "eq", "field": "robotId", "value": settings.robot_id},
-                {"type": "eq", "field": "status", "value": "PENDING"},
-            ],
-        },
-        order_by="createdAt",
-    )
+    from physical_ai_qa_cell_sdk.ontology.search import OperatorCommandObjectType
+
+    try:
+        commands = (
+            clients.client.ontology.objects.OperatorCommand
+            .where(OperatorCommandObjectType.robot_id.eq(settings.robot_id))
+            .where(OperatorCommandObjectType.status.eq("PENDING"))
+            .order_by(OperatorCommandObjectType.created_at.desc())
+            .take(100)
+        )
+    except Exception as exc:
+        logger.error("Failed to poll commands: %s", exc)
+        return
 
     for cmd in commands:
-        props = cmd.get("properties", cmd)
-        cmd_type = props.get("commandType", "")
-        cmd_id = props.get("commandId", "")
-        payload_str = props.get("payload", "{}")
+        cmd_type = cmd.command_type or ""
+        cmd_id = cmd.command_id or ""
+        payload_str = cmd.payload or "{}"
 
         logger.info("Processing command %s: %s", cmd_id, cmd_type)
 
@@ -259,10 +259,13 @@ def _poll_commands(
                 logger.error("Bad UPDATE_TOLERANCE payload: %s", exc)
 
         # Acknowledge the command
-        clients.apply_action(ACTION_ACK_COMMAND, {
-            "commandId": cmd_id,
-            "status": "EXECUTED",
-        })
+        try:
+            clients.client.ontology.actions.acknowledge_command(
+                command=cmd_id,
+                new_status="EXECUTED",
+            )
+        except Exception as exc:
+            logger.error("Failed to acknowledge command %s: %s", cmd_id, exc)
 
 
 def _send_heartbeat(
@@ -276,9 +279,12 @@ def _send_heartbeat(
         logger.debug("[MOCK] Heartbeat: status=%s, total=%d", state.status, state.total_inspections)
         return
 
-    clients.apply_action(ACTION_UPDATE_ROBOT, {
-        "robotId": settings.robot_id,
-        "status": state.status,
-        "currentModelVersion": model_version,
-        "totalInspections": state.total_inspections,
-    })
+    try:
+        clients.client.ontology.actions.update_robot_status(
+            robot=settings.robot_id,
+            status=state.status,
+            current_model_version=model_version,
+            total_inspections=state.total_inspections,
+        )
+    except Exception as exc:
+        logger.error("Heartbeat failed: %s", exc)
