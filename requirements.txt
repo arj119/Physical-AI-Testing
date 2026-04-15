@@ -1,0 +1,18 @@
+# Core Foundry integration
+requests>=2.28.0
+python-dotenv>=1.0.0
+
+# Hardware drivers
+opencv-python-headless>=4.8.0
+pymycobot>=3.3.0
+numpy>=1.24.0
+Pillow>=10.0.0
+
+# Jetson-specific (pre-installed on JetPack or manual install)
+# torch  — use Jetson PyTorch wheel from NVIDIA
+# tensorrt  — pre-installed with JetPack
+# pycuda  — for TensorRT inference
+# onnxruntime  — optional, for ONNX backend during development
+
+# Testing
+pytest>=7.0.0

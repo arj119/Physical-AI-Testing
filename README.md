@@ -1,61 +1,113 @@
-# Publishing Conda libraries
+# qa-cell-edge-agent
 
-This repository template is set up to publish a Conda library into Foundry. The ``build.gradle`` file configures the publish task to only run when the repository is tagged. You can create a new tag from the "Branches" tab.
+Jetson Nano edge agent for the Physical AI QA Cell. Runs on-device vision inference,
+fuses it with gripper feedback, sorts parts autonomously, and reports everything to
+Palantir Foundry.
 
-By default, the repository's name at creation time is used as the name for the Conda package. It is possible to change the name of the package by updating the ``condaPackageName`` variable in the ``gradle.properties`` file. Note that since this is a hidden file, you will need to enable "Show hidden files and folders".
+## Architecture
 
-*Important:* underscores in the repository name are rewritten to dash. For example, if your repository is named `my_library`, then the library will be published as `my-library`.
+Three long-running processes + one utility script:
 
-## Consuming Conda Libraries
-
-Consumers will require read access on this repository to be able to consume the libraries it publishes. They can search for them in the *Libraries* section on the left-hand side in the consuming code repository. This will automatically add the dependency to ``meta.yaml`` and configure the appropriate Artifacts backing repositories.
-
-Adding a library to your project will install packages from the source directory. The source directory defaults to ``src/`` and we recommend not changing this. You still need to import packages before you can use them in your module. Be aware that you have to import package name and not library name (in this template, the package name is ``myproject``).
-
-### Example
-
-Let's say your library structure is:
+| Process | Module | Purpose |
+|---------|--------|---------|
+| **1. Sensor Push** | `processes/sensor_push.py` | Camera capture + gripper read → Foundry Streams |
+| **2. Defect Detection** | `processes/defect_detection.py` | YOLOv5 inference + sensor fusion → OSDK actions |
+| **3. Model Upgrade** | `processes/model_upgrade.py` | Polls ModelRegistry → downloads + hot-swaps model |
+| **Test Connection** | `scripts/test_connection.py` | Connectivity verification + seed data |
 
 ```
-conda_recipe/
+sensor_push ──Queue──► defect_detection ──OSDK──► Foundry
+                              ▲
+model_upgrade ──Event────────┘ (reload signal)
+```
+
+## Quick Start (Development / Mock Mode)
+
+```bash
+# 1. Clone from Foundry
+git clone <foundry-git-url> qa-cell-edge-agent
+cd qa-cell-edge-agent
+
+# 2. Create virtualenv
+python3 -m venv venv && source venv/bin/activate
+
+# 3. Install dependencies
+pip install -r requirements.txt
+
+# 4. Configure
+cp .env.example .env
+# Edit .env with your Foundry URL + client credentials
+
+# 5. Test connectivity
+python scripts/test_connection.py
+
+# 6. Seed demo data (optional)
+python scripts/test_connection.py --seed --count 50
+
+# 7. Run all processes in mock mode (no hardware needed)
+python -m qa_cell_edge_agent.main --mock
+```
+
+## Quick Start (Production / Jetson)
+
+```bash
+# 1. Clone + install (same as above, but on Jetson)
+# 2. Configure .env with real hardware settings (MOCK_HARDWARE=false)
+
+# 3. Calibrate arm waypoints
+python scripts/calibrate_arm.py
+
+# 4. Install systemd services
+sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable qa-cell-edge-agent.target
+sudo systemctl start qa-cell-edge-agent.target
+
+# 5. Monitor
+journalctl -u qa-sensor-push -f
+journalctl -u qa-defect-detection -f
+journalctl -u qa-model-upgrade -f
+```
+
+## Project Structure
+
+```
 src/
-  examplepkg/
-    __init__.py
-    mymodule.py
-  otherpkg/
-    __init__.py
-    utils.py
-  setup.cfg
-  setup.py
+├── qa_cell_edge_agent/
+│   ├── config/          # Settings + Foundry client setup
+│   ├── drivers/         # Camera, gripper, arm hardware interfaces
+│   ├── fusion/          # Sensor fusion decision engine
+│   ├── models/          # YOLOv5/TensorRT inference wrapper
+│   ├── processes/       # The 3 long-running processes
+│   └── main.py          # Process orchestrator
+├── scripts/             # Utility scripts (test_connection, calibrate_arm)
+└── test/                # Unit tests
+systemd/                 # systemd service files for Jetson deployment
 ```
 
-And in ``gradle.properties``, the value of ``condaPackageName`` is ``mylibrary``.
+## Sensor Fusion Logic
 
-When consuming this library, the consuming repository's ``conda_recipe/meta.yaml`` file will contain:
+The fusion engine combines vision confidence with gripper load:
 
-```
-requirements:
-  run:
-    - mylibrary
-```
+| Vision | Grip Load | Decision | Reason |
+|--------|-----------|----------|--------|
+| class=good, conf ≥ 0.75 | load ≤ 0.65 | **PASS** | Both sensors agree: good part |
+| class=defect OR conf < 0.75 | load > 0.65 | **FAIL** | Both sensors agree: bad part |
+| Sensors disagree | — | **REVIEW** | Human review required |
 
-Then the packages, which in this example are ``examplepkg`` and ``otherpkg``, can be imported as follows:
-
-```
-import examplepkg as E
-from examplepkg import mymodule
-from otherpkg.utils import some_function_in_utils
-```
-
-Note that the import will fail if the package does not include a file named ``__init__.py``
+Thresholds are configurable via `.env` and can be updated at runtime via the
+`UPDATE_TOLERANCE` operator command from the dashboard.
 
 ## Testing
 
-Unit tests can be evaluated automatically as part of CI checks. You can enable this by uncommenting the following line in `build.gradle`:
-
-```
-// Apply the testing plugin
-apply plugin: 'com.palantir.transforms.lang.pytest-defaults'
+```bash
+# Run unit tests
+pytest src/test/ -v
 ```
 
-You can find an example unit test inside the `src/test` directory. Please refer to the [documentation](https://www.palantir.com/docs/foundry/transforms-python/unit-tests/#enabling-tests) for more information.
+## Foundry Resources
+
+- **Streams:** vision-readings, grip-readings
+- **Actions used:** CreateInspectionEvent, UpdateRobotStatus, AcknowledgeCommand
+- **Actions polled:** OperatorCommand (PAUSE/RESUME/E_STOP/UPDATE_TOLERANCE)
+- **Model source:** ModelRegistry object type
