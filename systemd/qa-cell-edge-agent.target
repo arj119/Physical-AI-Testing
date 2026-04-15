@@ -1,6 +1,7 @@
 [Unit]
 Description=QA Cell Edge Agent (all processes)
 After=network-online.target
+Wants=qa-cell-edge-agent.service
 
 [Install]
 WantedBy=multi-user.target

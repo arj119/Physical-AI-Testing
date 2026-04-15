@@ -58,6 +58,18 @@ class FusionEngine:
         normalized_load : float
             Normalised gripper load in ``[0, 1]``.
         """
+        if normalized_load is None:
+            logger.warning("Grip load is None — degraded mode, defaulting to REVIEW")
+            vision_pass = (
+                vision_class == "widget_good"
+                and confidence >= self.confidence_threshold
+            )
+            return FusionResult(
+                decision="REVIEW",
+                reason=f"degraded_grip_missing — vision_{'pass' if vision_pass else 'fail'}",
+                vision_agrees=False,
+            )
+
         vision_pass = (
             vision_class == "widget_good"
             and confidence >= self.confidence_threshold

@@ -23,16 +23,16 @@ OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent"
 
 def main():
     try:
-        from pymycobot.mycobot import MyCobot
+        from pymycobot import MyCobot280
     except ImportError:
-        print("ERROR: pymycobot not installed. Run: pip install pymycobot")
+        print("ERROR: pymycobot not installed. Run: pip install 'pymycobot>=3.6.0,<5.0.0'")
         sys.exit(1)
 
     port = os.getenv("MYCOBOT_PORT", "/dev/ttyUSB0")
     baud = int(os.getenv("MYCOBOT_BAUD", "115200"))
 
     print(f"Connecting to myCobot on {port} @ {baud}...")
-    mc = MyCobot(port, baud)
+    mc = MyCobot280(port, baud)
 
     print("\n=== myCobot 280 Waypoint Calibration ===")
     print("For each waypoint, manually move the arm to the desired position,")

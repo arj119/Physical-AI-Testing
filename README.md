@@ -4,22 +4,31 @@ Jetson Nano edge agent for the Physical AI QA Cell. Runs on-device vision infere
 fuses it with gripper feedback, sorts parts autonomously, and reports everything to
 Palantir Foundry.
 
+**Hardware:** myCobot 280 (6-DOF) with adaptive gripper, USB camera, NVIDIA Jetson Nano  
+**SDK:** pymycobot >=3.6.0 (`MyCobot280` class)
+
 ## Architecture
 
-Three long-running processes + one utility script:
+Three long-running processes managed by a single orchestrator (`main.py`):
 
 | Process | Module | Purpose |
 |---------|--------|---------|
-| **1. Sensor Push** | `processes/sensor_push.py` | Camera capture + gripper read → Foundry Streams |
-| **2. Defect Detection** | `processes/defect_detection.py` | YOLOv5 inference + sensor fusion → OSDK actions |
+| **1. Sensor Push** | `processes/sensor_push.py` | Camera capture → Foundry vision stream |
+| **2. Defect Detection** | `processes/defect_detection.py` | Gripper read + YOLOv5 inference + sensor fusion + arm control → OSDK actions |
 | **3. Model Upgrade** | `processes/model_upgrade.py` | Polls ModelRegistry → downloads + hot-swaps model |
 | **Test Connection** | `scripts/test_connection.py` | Connectivity verification + seed data |
+| **Calibrate Arm** | `scripts/calibrate_arm.py` | Interactive waypoint calibration → `waypoints.json` |
 
 ```
 sensor_push ──Queue──► defect_detection ──OSDK──► Foundry
-                              ▲
-model_upgrade ──Event────────┘ (reload signal)
+  (camera)               (arm + gripper       ▲
+                          + inference)         │
+                    model_upgrade ──Event──────┘ (reload signal)
 ```
+
+All serial I/O (arm + gripper) is consolidated in Process 2 via a shared
+`MyCobot280` connection singleton (`drivers/connection.py`) to avoid serial
+port conflicts.
 
 ## Quick Start (Development / Mock Mode)
 
@@ -54,19 +63,19 @@ python -m qa_cell_edge_agent.main --mock
 # 1. Clone + install (same as above, but on Jetson)
 # 2. Configure .env with real hardware settings (MOCK_HARDWARE=false)
 
-# 3. Calibrate arm waypoints
+# 3. Calibrate arm waypoints (interactive — move arm to each position)
 python scripts/calibrate_arm.py
+# Saves to src/qa_cell_edge_agent/drivers/waypoints.json
+# Arm driver loads these automatically on next startup
 
-# 4. Install systemd services
-sudo cp systemd/*.service systemd/*.target /etc/systemd/system/
+# 4. Install systemd service
+sudo cp systemd/qa-cell-edge-agent.service systemd/qa-cell-edge-agent.target /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable qa-cell-edge-agent.target
 sudo systemctl start qa-cell-edge-agent.target
 
 # 5. Monitor
-journalctl -u qa-sensor-push -f
-journalctl -u qa-defect-detection -f
-journalctl -u qa-model-upgrade -f
+journalctl -u qa-cell-edge-agent -f
 ```
 
 ## Project Structure
@@ -75,14 +84,18 @@ journalctl -u qa-model-upgrade -f
 src/
 ├── qa_cell_edge_agent/
 │   ├── config/          # Settings + Foundry client setup
-│   ├── drivers/         # Camera, gripper, arm hardware interfaces
+│   ├── drivers/
+│   │   ├── connection.py  # Shared MyCobot280 serial singleton
+│   │   ├── arm.py         # Waypoint-based arm control + pick-and-place
+│   │   ├── gripper.py     # Gripper read/close/open (get_gripper_value API)
+│   │   └── camera.py      # USB camera capture + thumbnails
 │   ├── fusion/          # Sensor fusion decision engine
 │   ├── models/          # YOLOv5/TensorRT inference wrapper
 │   ├── processes/       # The 3 long-running processes
-│   └── main.py          # Process orchestrator
+│   └── main.py          # Process orchestrator (manages all 3 via multiprocessing)
 ├── scripts/             # Utility scripts (test_connection, calibrate_arm)
 └── test/                # Unit tests
-systemd/                 # systemd service files for Jetson deployment
+systemd/                 # Single systemd service for Jetson deployment
 ```
 
 ## Sensor Fusion Logic
@@ -94,9 +107,19 @@ The fusion engine combines vision confidence with gripper load:
 | class=good, conf ≥ 0.75 | load ≤ 0.65 | **PASS** | Both sensors agree: good part |
 | class=defect OR conf < 0.75 | load > 0.65 | **FAIL** | Both sensors agree: bad part |
 | Sensors disagree | — | **REVIEW** | Human review required |
+| Grip data unavailable | — | **REVIEW** | Degraded mode: grip sensor missing |
 
 Thresholds are configurable via `.env` and can be updated at runtime via the
 `UPDATE_TOLERANCE` operator command from the dashboard.
+
+## Pick-and-Place Sequence
+
+```
+HOME → PICK → close gripper → BIN (PASS/FAIL/REVIEW) → release gripper → HOME
+```
+
+The arm always returns to HOME before moving to PICK to ensure a safe,
+predictable path. Bin selection is driven by the fusion decision.
 
 ## Testing
 

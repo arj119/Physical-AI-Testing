@@ -10,15 +10,10 @@ import logging
 import random
 import time
 from dataclasses import dataclass
-from typing import Optional
+
+from qa_cell_edge_agent.drivers.connection import get_connection
 
 logger = logging.getLogger(__name__)
-
-try:
-    from pymycobot.mycobot import MyCobot
-except ImportError:
-    MyCobot = None  # type: ignore[assignment,misc]
-    logger.warning("pymycobot not available — gripper will run in mock mode")
 
 
 @dataclass
@@ -43,20 +38,14 @@ class Gripper:
         baud: int = 115200,
         mock: bool = False,
     ) -> None:
-        self.mock = mock or MyCobot is None
-        self._mc: Optional[MyCobot] = None
+        self._mc = get_connection(port, baud, mock=mock)
+        self.mock = self._mc is None
         self._grip_state = "OPEN"
 
-        if not self.mock:
-            try:
-                self._mc = MyCobot(port, baud)
-                time.sleep(0.5)  # allow serial to settle
-                logger.info("Gripper connected on %s @ %d", port, baud)
-            except Exception as exc:
-                logger.error("Gripper init failed: %s — falling back to mock", exc)
-                self.mock = True
         if self.mock:
             logger.info("Gripper running in MOCK mode")
+        else:
+            logger.info("Gripper ready (shared connection on %s @ %d)", port, baud)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -65,16 +54,25 @@ class Gripper:
         if self.mock:
             return self._mock_read()
 
+        # Use get_gripper_value() (0=fully closed, 100=fully open) as the
+        # primary reading.  Fall back to raw servo register if unsupported.
         try:
-            servo_load = float(self._mc.get_servo_data(7, 14) or 0)
+            raw = self._mc.get_gripper_value()
+            if raw is not None:
+                # Invert: gripper_value 0=closed (max load) → normalized 1.0
+                servo_load = max(0.0, float(100 - raw))
+                normalized = min(servo_load / 100.0, 1.0)
+            else:
+                servo_load = float(self._mc.get_servo_data(7, 14) or 0)
+                normalized = min(servo_load / self.MAX_SERVO_LOAD, 1.0)
         except Exception as exc:
-            logger.warning("Failed to read servo load: %s", exc)
+            logger.warning("Failed to read gripper: %s", exc)
             servo_load = 0.0
+            normalized = 0.0
 
-        normalized = min(servo_load / self.MAX_SERVO_LOAD, 1.0)
         detected = normalized > 0.1
         return GripData(
-            servo_load=servo_load,
+            servo_load=round(servo_load, 2),
             normalized_load=round(normalized, 4),
             grip_state=self._grip_state,
             object_detected=detected,
@@ -84,14 +82,14 @@ class Gripper:
         """Open the gripper."""
         self._grip_state = "OPEN"
         if not self.mock:
-            self._mc.set_gripper_state(0, 50)
+            self._mc.set_gripper_value(100, 50)
             time.sleep(0.5)
 
     def close_gripper(self) -> None:
         """Close the gripper."""
         self._grip_state = "CLOSING"
         if not self.mock:
-            self._mc.set_gripper_state(1, 50)
+            self._mc.set_gripper_value(0, 50)
             time.sleep(1.0)
         self._grip_state = "CLOSED"
 

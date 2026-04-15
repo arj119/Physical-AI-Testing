@@ -1,8 +1,10 @@
 """Process 2 — Defect Detection.
 
-Dequeues sensor data from Process 1, runs YOLOv5 inference, applies sensor
-fusion, commands the robot arm to sort the part, and writes results to Foundry
-via OSDK actions.  Also handles operator command polling and heartbeat updates.
+Dequeues camera frames from Process 1, reads gripper servo load (this process
+owns the serial connection to avoid conflicts with the arm driver), runs
+YOLOv5 inference, applies sensor fusion, commands the robot arm to sort the
+part, and writes results to Foundry via OSDK actions.  Also handles operator
+command polling and heartbeat updates.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+import uuid
 from multiprocessing import Event, Queue
 from typing import Optional
 
@@ -38,6 +41,7 @@ class RobotState:
     def __init__(self) -> None:
         self.status: str = self.RUNNING
         self.total_inspections: int = 0
+        self._e_stop_handled: bool = False
 
 
 def run_defect_detection(
@@ -55,6 +59,7 @@ def run_defect_detection(
     )
     model = ModelInference(model_path=settings.model_path, mock=settings.mock_hardware)
     model.version = "v1.0.0"
+    # Arm and Gripper share a single serial connection via drivers.connection
     arm = Arm(
         port=settings.mycobot_port,
         baud=settings.mycobot_baud,
@@ -93,7 +98,9 @@ def run_defect_detection(
                 time.sleep(settings.command_poll_interval_sec)
                 continue
             if state.status == RobotState.E_STOPPED:
-                arm.safe_position()
+                if not state._e_stop_handled:
+                    arm.safe_position()
+                    state._e_stop_handled = True
                 time.sleep(settings.command_poll_interval_sec)
                 continue
 
@@ -105,6 +112,26 @@ def run_defect_detection(
 
             cycle_start = time.monotonic()
 
+            # ── Read gripper (same serial connection as arm) ──────
+            grip_data = gripper.read()
+            grip_reading_id = f"gr-{uuid.uuid4()}"
+
+            # Push grip reading to Foundry stream
+            if not settings.mock_foundry:
+                grip_record = {
+                    "readingId": grip_reading_id,
+                    "inspectionId": item["inspection_id"],
+                    "robotId": settings.robot_id,
+                    "timestamp": item["timestamp"],
+                    "servoLoad": grip_data.servo_load,
+                    "normalizedLoad": grip_data.normalized_load,
+                    "gripState": grip_data.grip_state,
+                    "objectDetected": grip_data.object_detected,
+                }
+                ok_g = clients.push_to_stream(settings.grip_stream_rid, [grip_record])
+                if not ok_g:
+                    logger.error("Failed to push GripReading %s", grip_reading_id)
+
             # ── Run inference ─────────────────────────────────────
             result = model.infer(item["frame"])
 
@@ -112,12 +139,11 @@ def run_defect_detection(
             fusion_result = fusion.decide(
                 vision_class=result.detected_class,
                 confidence=result.confidence,
-                normalized_load=item["grip_data"].normalized_load,
+                normalized_load=grip_data.normalized_load,
             )
 
             # ── Sort part ─────────────────────────────────────────
-            arm.pick_and_place(fusion_result.decision)
-            gripper.release()
+            arm.pick_and_place(fusion_result.decision, gripper)
 
             cycle_time_ms = int((time.monotonic() - cycle_start) * 1000)
 
@@ -133,7 +159,7 @@ def run_defect_detection(
                     "timestamp": item["timestamp"],
                     "visionClass": result.detected_class,
                     "visionConfidence": result.confidence,
-                    "gripLoad": item["grip_data"].normalized_load,
+                    "gripLoad": grip_data.normalized_load,
                     "fusionDecision": fusion_result.decision,
                     "fusionReason": fusion_result.reason,
                     "visionAgrees": fusion_result.vision_agrees,
@@ -155,7 +181,7 @@ def run_defect_detection(
                 item["inspection_id"],
                 result.detected_class,
                 result.confidence,
-                item["grip_data"].normalized_load,
+                grip_data.normalized_load,
                 fusion_result.decision,
                 cycle_time_ms,
             )
@@ -203,9 +229,12 @@ def _poll_commands(
             state.status = RobotState.PAUSED
         elif cmd_type == "RESUME":
             state.status = RobotState.RUNNING
+            state._e_stop_handled = False
         elif cmd_type == "E_STOP":
             state.status = RobotState.E_STOPPED
+            state._e_stop_handled = False
             arm.safe_position()
+            state._e_stop_handled = True
         elif cmd_type == "UPDATE_TOLERANCE":
             try:
                 payload = json.loads(payload_str) if payload_str else {}

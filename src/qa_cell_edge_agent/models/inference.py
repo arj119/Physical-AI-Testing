@@ -122,14 +122,21 @@ class ModelInference:
         except Exception as exc:
             raise RuntimeError(f"ONNX load failed: {exc}") from exc
 
+    _engine_warning_logged = False
+
     def _run_engine(self, frame: np.ndarray) -> InferenceResult:
         """Execute inference on the loaded engine.
 
         TODO: Replace this stub with actual TensorRT / ONNX pre/post-processing
         once the trained model is available.
         """
-        # Placeholder — returns mock-like results until real model is integrated
-        logger.debug("_run_engine called — using placeholder logic")
+        if not ModelInference._engine_warning_logged:
+            logger.warning(
+                "_run_engine is a STUB — returning mock results despite model "
+                "loaded from %s. Implement real pre/post-processing.",
+                self.model_path,
+            )
+            ModelInference._engine_warning_logged = True
         return self._mock_infer()
 
     @staticmethod

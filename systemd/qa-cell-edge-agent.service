@@ -1,20 +1,19 @@
 [Unit]
-Description=QA Cell - Sensor Push (Process 1)
+Description=QA Cell Edge Agent
 After=network-online.target
 Requires=network-online.target
-PartOf=qa-cell-edge-agent.target
 
 [Service]
 Type=simple
 User=jetson
 WorkingDirectory=/opt/qa-cell-edge-agent
 EnvironmentFile=/opt/qa-cell-edge-agent/.env
-ExecStart=/opt/qa-cell-edge-agent/venv/bin/python -m qa_cell_edge_agent.processes.sensor_push
+ExecStart=/opt/qa-cell-edge-agent/venv/bin/python -m qa_cell_edge_agent.main
 Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=qa-sensor-push
+SyslogIdentifier=qa-cell-edge-agent
 
 [Install]
-WantedBy=qa-cell-edge-agent.target
+WantedBy=multi-user.target
