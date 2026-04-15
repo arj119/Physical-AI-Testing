@@ -75,7 +75,7 @@ class Settings:
 
     # ── Model management (Process 3) ──────────────────────────────────
     model_path: str = field(
-        default_factory=lambda: os.environ.get("MODEL_PATH", "./models/yolov5n.engine")
+        default_factory=lambda: os.environ.get("MODEL_PATH", "./models/yolov5n.onnx")
     )
     model_poll_interval_sec: float = field(
         default_factory=lambda: float(os.environ.get("MODEL_POLL_INTERVAL_SEC", "60"))

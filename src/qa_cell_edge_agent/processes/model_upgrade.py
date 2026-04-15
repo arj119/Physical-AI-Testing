@@ -18,6 +18,7 @@ from typing import Optional
 
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
+from qa_cell_edge_agent.config.jetson import get_trtexec_args
 
 logger = logging.getLogger(__name__)
 
@@ -164,13 +165,8 @@ def _convert_to_tensorrt(
 
     Returns True on success.
     """
-    cmd = [
-        settings.trtexec_path,
-        f"--onnx={onnx_path}",
-        f"--saveEngine={engine_path}",
-        "--fp16",  # half-precision for Jetson performance
-        "--workspace=1024",
-    ]
+    # Use Jetson Nano 2GB-aware workspace size (256 MB default, not 1024)
+    cmd = get_trtexec_args(onnx_path, engine_path)
     logger.info("Converting ONNX → TensorRT: %s", " ".join(cmd))
     try:
         result = subprocess.run(
