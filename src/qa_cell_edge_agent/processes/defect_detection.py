@@ -165,6 +165,9 @@ def run_defect_detection(
                 ts = datetime.fromisoformat(
                     item["timestamp"].replace("Z", "+00:00")
                 )
+                # Upload the camera frame and get a MediaReference
+                captured_ref = _upload_frame(clients, item)
+
                 clients.client.ontology.actions.create_inspection_event(
                     inspection_id=item["inspection_id"],
                     robot_id=settings.robot_id,
@@ -178,6 +181,7 @@ def run_defect_detection(
                     model_version=model.version,
                     cycle_time_ms=cycle_time_ms,
                     review_status=review_status,
+                    captured_image_ref=captured_ref,
                 )
             else:
                 logger.debug(
@@ -288,3 +292,29 @@ def _send_heartbeat(
         )
     except Exception as exc:
         logger.error("Heartbeat failed: %s", exc)
+
+
+def _upload_frame(clients: FoundryClients, item: dict):
+    """Encode the camera frame as JPEG and upload as a MediaReference.
+
+    Returns a ``MediaReference`` on success, or ``None`` if the upload fails.
+    """
+    try:
+        import cv2
+        from foundry_sdk_runtime import AllowBetaFeatures
+
+        frame = item.get("frame")
+        if frame is None:
+            return None
+
+        _, jpeg_buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        filename = f"{item['inspection_id']}.jpg"
+
+        with AllowBetaFeatures():
+            media_ref = clients.client.ontology.media.upload_media(
+                jpeg_buf.tobytes(), filename
+            )
+        return media_ref
+    except Exception as exc:
+        logger.warning("Frame upload failed (will create event without image): %s", exc)
+        return None
