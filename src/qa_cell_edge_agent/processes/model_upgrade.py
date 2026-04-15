@@ -7,7 +7,6 @@ hot-swap the model.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import shutil
@@ -86,22 +85,16 @@ def _check_and_upgrade(
 
     latest = models[0]
     latest_version = latest.version or ""
-    artifact_path = latest.artifact_path or ""
 
     if latest_version <= current_version:
         logger.debug("Already on latest model %s", current_version)
         return None
 
-    logger.info(
-        "New model available: %s → %s (artifact: %s)",
-        current_version,
-        latest_version,
-        artifact_path,
-    )
+    logger.info("New model available: %s → %s", current_version, latest_version)
 
-    # ── 2. Download artifact ──────────────────────────────────────
-    staging_path = os.path.join(settings.model_staging_dir, f"model_{latest_version}")
-    if not _download_artifact(settings, clients, artifact_path, staging_path):
+    # ── 2. Download artifact via SDK media API ───────────────────
+    staging_path = _download_model_artifact(clients, latest, settings)
+    if staging_path is None:
         return None
 
     # ── 3. Convert to TensorRT if ONNX ───────────────────────────
@@ -137,33 +130,52 @@ def _check_and_upgrade(
     return latest_version
 
 
-def _download_artifact(
-    settings: Settings,
+def _download_model_artifact(
     clients: FoundryClients,
-    artifact_path: str,
-    local_path: str,
-) -> bool:
-    """Download a model artifact from Foundry.
+    model_obj,
+    settings: Settings,
+) -> Optional[str]:
+    """Download the model artifact via the SDK media API.
 
-    ``artifact_path`` may be a media-set reference or a direct URL.
-    Returns True on success.
+    Uses ``model_artifact_ref.get_media_content()`` to stream the file bytes
+    and ``get_media_metadata()`` to determine the filename extension.
+
+    Returns the local staging path on success, or ``None``.
     """
+    from foundry_sdk_runtime import AllowBetaFeatures
+
     try:
-        resp = clients.session.get(
-            f"{settings.foundry_url}{artifact_path}",
-            stream=True,
-            timeout=120,
-        )
-        resp.raise_for_status()
+        with AllowBetaFeatures():
+            media_ref = model_obj.model_artifact_ref
+            if media_ref is None:
+                logger.error("Model %s has no model_artifact_ref", model_obj.version)
+                return None
+
+            metadata = media_ref.get_media_metadata()
+            content = media_ref.get_media_content()
+
+        # Determine file extension from metadata path or default to .onnx
+        ext = ".onnx"
+        if metadata and metadata.path:
+            _, found_ext = os.path.splitext(metadata.path)
+            if found_ext:
+                ext = found_ext
+
+        version = model_obj.version or "unknown"
+        local_path = os.path.join(settings.model_staging_dir, f"model_{version}{ext}")
+
         with open(local_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+            f.write(content.read())
+
         size_mb = os.path.getsize(local_path) / (1024 * 1024)
-        logger.info("Downloaded model artifact: %.1f MB → %s", size_mb, local_path)
-        return True
+        logger.info(
+            "Downloaded model artifact: %.1f MB → %s (media: %s)",
+            size_mb, local_path, metadata.path if metadata else "unknown",
+        )
+        return local_path
     except Exception as exc:
-        logger.error("Artifact download failed: %s", exc)
-        return False
+        logger.error("Model artifact download failed: %s", exc)
+        return None
 
 
 def _convert_to_tensorrt(
