@@ -174,10 +174,16 @@ class ModelInference:
         img = np.ascontiguousarray(img, dtype=np.float32) / 255.0
         img = img[np.newaxis, ...]  # add batch dim
 
+        # Match model's expected input dtype (some exports use float16)
+        input_meta = self._engine.get_inputs()[0]
+        if input_meta.type == "tensor(float16)":
+            img = img.astype(np.float16)
+
         # Run model
-        input_name = self._engine.get_inputs()[0].name
-        outputs = self._engine.run(None, {input_name: img})
-        preds = outputs[0]  # shape: [1, num_detections, 5+num_classes]
+        outputs = self._engine.run(None, {input_meta.name: img})
+        preds = outputs[0]
+        if preds.dtype == np.float16:
+            preds = preds.astype(np.float32)
 
         # Post-process: filter by confidence, NMS, pick best detection
         detections = _postprocess(preds[0], conf_threshold=0.25, iou_threshold=0.45)
