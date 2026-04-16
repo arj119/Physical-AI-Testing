@@ -44,19 +44,26 @@ def _ensure_sdk():
 
 
 class FoundryClients:
-    """Lazy-initialised Foundry clients that share a single OAuth2 identity."""
+    """Lazy-initialised Foundry clients that share a single OAuth2 identity.
+
+    The SDK ``ConfidentialClientAuth`` handles the OSDK token (ontology scopes).
+    Stream push requires a **separate** token minted with ``api:use-streams-write``
+    because the high-scale streams endpoint rejects multi-scope tokens.
+    """
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self._auth = None
         self._client = None
-        self._session: Optional[requests.Session] = None
+        self._stream_session: Optional[requests.Session] = None
+        self._stream_token: Optional[str] = None
+        self._stream_token_expiry: float = 0.0
 
-    # ── SDK auth + client ────────────────────────────────────────────
+    # ── SDK auth + client (OSDK scopes) ──────────────────────────────
 
     @property
     def auth(self):
-        """``ConfidentialClientAuth`` with auto-refresh."""
+        """``ConfidentialClientAuth`` with auto-refresh for OSDK operations."""
         if self._auth is None:
             _ensure_sdk()
             self._auth = _ConfidentialClientAuth(
@@ -79,19 +86,42 @@ class FoundryClients:
             )
         return self._client
 
-    # ── Authenticated session for stream push ────────────────────────
+    # ── Stream push (separate token with streams-write scope) ────────
+
+    def _refresh_stream_token(self) -> str:
+        """Obtain a token scoped specifically for stream push."""
+        if self._stream_token and time.time() < self._stream_token_expiry - 30:
+            return self._stream_token
+
+        resp = requests.post(
+            f"{self.settings.foundry_url}/multipass/api/oauth2/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.settings.client_id,
+                "client_secret": self.settings.client_secret,
+                "scope": "api:use-streams-write",
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        self._stream_token = body["access_token"]
+        self._stream_token_expiry = time.time() + body.get("expires_in", 3600)
+        logger.info("Stream push token refreshed")
+        return self._stream_token
 
     @property
     def session(self) -> requests.Session:
-        """Return a ``requests.Session`` with the SDK auth token."""
-        if self._session is None:
-            self._session = requests.Session()
-        token = self.auth.get_token().access_token
-        self._session.headers.update({
+        """Return a ``requests.Session`` with the stream-scoped token."""
+        if self._stream_session is None:
+            self._stream_session = requests.Session()
+        token = self._refresh_stream_token()
+        self._stream_session.headers.update({
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         })
-        return self._session
+        return self._stream_session
 
     # ── Stream push (v2 high-scale streams API) ──────────────────────
 
