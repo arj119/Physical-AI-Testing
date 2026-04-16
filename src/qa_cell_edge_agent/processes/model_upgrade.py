@@ -66,15 +66,17 @@ def _check_and_upgrade(
     """
 
     # ── 1. Query ModelRegistry for PUBLISHED models ───────────────
+    from foundry_sdk_runtime import AllowBetaFeatures
     from physical_ai_qa_cell_sdk.ontology.search import ModelRegistryObjectType
 
     try:
-        models = (
-            clients.client.ontology.objects.ModelRegistry
-            .where(ModelRegistryObjectType.status == "PUBLISHED")
-            .order_by(ModelRegistryObjectType.published_at.desc())
-            .take(1)
-        )
+        with AllowBetaFeatures():
+            models = (
+                clients.client.ontology.objects.ModelRegistry
+                .where(ModelRegistryObjectType.status == "PUBLISHED")
+                .order_by(ModelRegistryObjectType.published_at.desc())
+                .take(1)
+            )
     except Exception as exc:
         logger.error("Failed to query ModelRegistry: %s", exc)
         return None
