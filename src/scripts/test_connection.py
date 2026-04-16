@@ -21,6 +21,8 @@ from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
+from foundry_sdk_runtime.types.null_types import Empty
+
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
 
@@ -103,6 +105,7 @@ def check_osdk_write(clients: FoundryClients, settings: Settings) -> bool:
             model_version="test",
             cycle_time_ms=1,
             review_status="NOT_REQUIRED",
+            captured_image_ref=Empty.value,
         )
         return True
     except Exception as exc:
@@ -127,7 +130,7 @@ def check_commands(clients: FoundryClients, settings: Settings) -> bool:
 
         commands = (
             clients.client.ontology.objects.OperatorCommand
-            .where(OperatorCommandObjectType.robot_id.eq(settings.robot_id))
+            .where(OperatorCommandObjectType.robot_id == settings.robot_id)
             .take(1)
         )
         return isinstance(commands, list)
@@ -290,6 +293,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             model_version="v1.0.0",
             cycle_time_ms=cycle_time,
             review_status=review_status,
+            captured_image_ref=Empty.value,
         )
 
         progress = f"  [{i + 1}/{count}] {inspection_id[:20]}... -> {decision}"

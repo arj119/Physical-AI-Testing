@@ -71,7 +71,7 @@ def _check_and_upgrade(
     try:
         models = (
             clients.client.ontology.objects.ModelRegistry
-            .where(ModelRegistryObjectType.status.eq("PUBLISHED"))
+            .where(ModelRegistryObjectType.status == "PUBLISHED")
             .order_by(ModelRegistryObjectType.published_at.desc())
             .take(1)
         )

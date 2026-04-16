@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from multiprocessing import Event, Queue
 from typing import Optional
 
+from foundry_sdk_runtime.types.null_types import Empty
+
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
 from qa_cell_edge_agent.drivers.arm import Arm
@@ -181,7 +183,7 @@ def run_defect_detection(
                     model_version=model.version,
                     cycle_time_ms=cycle_time_ms,
                     review_status=review_status,
-                    captured_image_ref=captured_ref,
+                    captured_image_ref=captured_ref if captured_ref is not None else Empty.value,
                 )
             else:
                 logger.debug(
@@ -226,8 +228,8 @@ def _poll_commands(
     try:
         commands = (
             clients.client.ontology.objects.OperatorCommand
-            .where(OperatorCommandObjectType.robot_id.eq(settings.robot_id))
-            .where(OperatorCommandObjectType.status.eq("PENDING"))
+            .where(OperatorCommandObjectType.robot_id == settings.robot_id)
+            .where(OperatorCommandObjectType.status == "PENDING")
             .order_by(OperatorCommandObjectType.created_at.desc())
             .take(100)
         )
