@@ -43,6 +43,12 @@ class Settings:
             "ri.foundry.main.dataset.8db216af-efd8-43e2-8f18-ff135536502d",
         )
     )
+    telemetry_stream_rid: str = field(
+        default_factory=lambda: os.environ.get(
+            "TELEMETRY_STREAM_RID",
+            "ri.foundry.main.dataset.90a6ab73-e170-4e1d-bc5b-30e19367a0f8",
+        )
+    )
 
     # ── Robot identity ────────────────────────────────────────────────
     robot_id: str = field(

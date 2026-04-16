@@ -1,10 +1,11 @@
 """Process 2 — Defect Detection.
 
-Dequeues camera frames from Process 1, reads gripper servo load (this process
-owns the serial connection to avoid conflicts with the arm driver), runs
-YOLOv5 inference, applies sensor fusion, commands the robot arm to sort the
-part, and writes results to Foundry via OSDK actions.  Also handles operator
-command polling and heartbeat updates.
+Dequeues camera frames from Process 1, runs YOLOv5 inference, applies sensor
+fusion, commands the robot arm to sort the part, and writes results to Foundry
+via OSDK actions.
+
+Owns the serial connection (arm + gripper). Writes latest sensor readings to
+a shared ``sensor_state`` dict so Process 1 can push them to Foundry streams.
 """
 
 from __future__ import annotations
@@ -45,8 +46,9 @@ class RobotState:
 
 
 def run_defect_detection(
-    queue: Queue,
+    sensor_queue: Queue,
     reload_event: Event,
+    sensor_state: dict,
     settings: Optional[Settings] = None,
 ) -> None:
     """Entry point for the defect-detection process (long-running)."""
@@ -59,7 +61,6 @@ def run_defect_detection(
     )
     model = ModelInference(model_path=settings.model_path, mock=settings.mock_hardware)
     model.version = "v1.0.0"
-    # Arm and Gripper share a single serial connection via drivers.connection
     arm = Arm(
         port=settings.mycobot_port,
         baud=settings.mycobot_baud,
@@ -94,6 +95,9 @@ def run_defect_detection(
                 _send_heartbeat(settings, clients, state, model.version)
                 last_heartbeat = now
 
+            # ── Update shared sensor state (every cycle) ──────────
+            _update_sensor_state(gripper, sensor_state)
+
             # ── Respect PAUSED / E_STOPPED ────────────────────────
             if state.status == RobotState.PAUSED:
                 time.sleep(settings.command_poll_interval_sec)
@@ -107,31 +111,14 @@ def run_defect_detection(
 
             # ── Dequeue sensor data ───────────────────────────────
             try:
-                item = queue.get(timeout=2.0)
+                item = sensor_queue.get(timeout=2.0)
             except queue.Empty:
-                continue  # nothing in queue — loop back to poll commands
+                continue
 
             cycle_start = time.monotonic()
 
-            # ── Read gripper (same serial connection as arm) ──────
+            # ── Read gripper ──────────────────────────────────────
             grip_data = gripper.read()
-            grip_reading_id = f"gr-{uuid.uuid4()}"
-
-            # Push grip reading to Foundry stream
-            if not settings.mock_foundry:
-                grip_record = {
-                    "readingId": grip_reading_id,
-                    "inspectionId": item["inspection_id"],
-                    "robotId": settings.robot_id,
-                    "timestamp": item["timestamp"],
-                    "servoLoad": grip_data.servo_load,
-                    "normalizedLoad": grip_data.normalized_load,
-                    "gripState": grip_data.grip_state,
-                    "objectDetected": grip_data.object_detected,
-                }
-                ok_g = clients.push_to_stream(settings.grip_stream_rid, [grip_record])
-                if not ok_g:
-                    logger.error("Failed to push GripReading %s", grip_reading_id)
 
             # ── Run inference ─────────────────────────────────────
             result = model.infer(item["frame"])
@@ -140,7 +127,7 @@ def run_defect_detection(
             pick_target = None
             if cam_transform.is_calibrated and result.bounding_box:
                 try:
-                    bbox = result.bounding_box  # list[float]
+                    bbox = result.bounding_box
                     cx = int(bbox[0] + bbox[2] / 2)
                     cy = int(bbox[1] + bbox[3] / 2)
                     pick_target = cam_transform.pixel_to_robot(cx, cy)
@@ -168,7 +155,6 @@ def run_defect_detection(
                 ts = datetime.fromisoformat(
                     item["timestamp"].replace("Z", "+00:00")
                 )
-                # Upload the camera frame and get a MediaReference
                 captured_ref = _upload_frame(clients, item)
 
                 clients.client.ontology.actions.create_inspection_event(
@@ -194,6 +180,13 @@ def run_defect_detection(
                     fusion_result.reason,
                 )
 
+            # ── Update shared state with latest inference results ──
+            sensor_state["vision_confidence"] = result.confidence
+            sensor_state["grip_load"] = grip_data.normalized_load
+            sensor_state["grip_servo_load"] = grip_data.servo_load
+            sensor_state["grip_state"] = grip_data.grip_state
+            sensor_state["object_detected"] = grip_data.object_detected
+
             state.total_inspections += 1
             logger.info(
                 "Inspection %s: %s (conf=%.2f, grip=%.2f) → %s [%dms]",
@@ -211,6 +204,12 @@ def run_defect_detection(
 
 
 # ── Helper functions ──────────────────────────────────────────────────
+
+
+def _update_sensor_state(gripper: Gripper, sensor_state: dict) -> None:
+    """Read joint temperatures and write to shared state for Process 1."""
+    temps = gripper.read_joint_temperatures()
+    sensor_state["joint_temps"] = temps
 
 
 def _poll_commands(
@@ -265,7 +264,6 @@ def _poll_commands(
             except (json.JSONDecodeError, TypeError) as exc:
                 logger.error("Bad UPDATE_TOLERANCE payload: %s", exc)
 
-        # Acknowledge the command
         try:
             clients.client.ontology.actions.acknowledge_command(
                 command=cmd_id,
@@ -298,10 +296,7 @@ def _send_heartbeat(
 
 
 def _upload_frame(clients: FoundryClients, item: dict):
-    """Encode the camera frame as JPEG and upload as a MediaReference.
-
-    Returns a ``MediaReference`` on success, or ``None`` if the upload fails.
-    """
+    """Encode the camera frame as JPEG and upload as a MediaReference."""
     try:
         import cv2
         from foundry_sdk_runtime import AllowBetaFeatures

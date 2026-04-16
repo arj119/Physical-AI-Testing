@@ -1,11 +1,13 @@
 """Process 1 — Sensor Push.
 
-Continuously captures frames from the camera, pushes raw VisionReading JSON
-to Foundry Streams, and enqueues frames locally for Process 2 (defect
-detection).
+Single source of truth for ALL Foundry stream pushes. Runs at 1Hz and pushes:
 
-Gripper reads are handled by Process 2 (which owns the serial connection)
-to avoid serial port conflicts with the arm driver.
+- **vision-readings** — camera frame thumbnail + placeholder inference fields
+- **grip-readings** — gripper servo load from shared sensor state
+- **sensor-telemetry** — scalar time series (joint temps, vision conf, grip load)
+
+Sensor readings come from the shared ``sensor_state`` dict, which Process 2
+(defect_detection) writes to on every cycle via the serial connection.
 """
 
 from __future__ import annotations
@@ -15,7 +17,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from multiprocessing import Queue
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 def run_sensor_push(
     queue: Queue,
+    sensor_state: dict,
     settings: Optional[Settings] = None,
 ) -> None:
     """Entry point for the sensor-push process (long-running)."""
@@ -51,7 +54,7 @@ def run_sensor_push(
         while True:
             cycle_start = time.monotonic()
             try:
-                _run_one_cycle(settings, clients, camera, queue)
+                _run_one_cycle(settings, clients, camera, queue, sensor_state)
             except Exception:
                 logger.exception("sensor_push cycle failed — will retry")
 
@@ -69,12 +72,16 @@ def _run_one_cycle(
     clients: FoundryClients,
     camera: Camera,
     queue: Queue,
+    sensor_state: dict,
 ) -> None:
     """Execute one capture → push → enqueue cycle."""
 
     now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     inspection_id = f"insp-{uuid.uuid4()}"
     vision_reading_id = f"vr-{uuid.uuid4()}"
+    grip_reading_id = f"gr-{uuid.uuid4()}"
+    robot_id = settings.robot_id
 
     # ── 1. Capture frame ──────────────────────────────────────────
     frame = camera.capture()
@@ -83,18 +90,20 @@ def _run_one_cycle(
         return
     thumbnail_b64 = camera.make_thumbnail_b64(frame)
 
-    # ── 2. Build stream payload ───────────────────────────────────
-    ts = now.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    # ── 2. Read shared sensor state (written by Process 2) ────────
+    grip_load = sensor_state.get("grip_load", 0.0)
+    grip_servo_load = sensor_state.get("grip_servo_load", 0.0)
+    grip_state_str = sensor_state.get("grip_state", "OPEN")
+    object_detected = sensor_state.get("object_detected", False)
+    vision_confidence = sensor_state.get("vision_confidence", 0.0)
+    joint_temps = sensor_state.get("joint_temps", [0.0] * 6)
 
+    # ── 3. Build stream payloads ──────────────────────────────────
     vision_record = {
         "readingId": vision_reading_id,
         "inspectionId": inspection_id,
-        "robotId": settings.robot_id,
+        "robotId": robot_id,
         "timestamp": ts,
-        # detectedClass and confidence are NOT known yet — they come from
-        # Process 2 after inference.  We push placeholder values here so
-        # the stream record is complete; Process 2 will create the
-        # authoritative InspectionEvent.
         "detectedClass": "pending",
         "confidence": 0.0,
         "boundingBox": [],
@@ -103,15 +112,55 @@ def _run_one_cycle(
         "thumbnailBase64": thumbnail_b64,
     }
 
-    # ── 3. Push to stream ─────────────────────────────────────────
+    grip_record = {
+        "readingId": grip_reading_id,
+        "inspectionId": inspection_id,
+        "robotId": robot_id,
+        "timestamp": ts,
+        "servoLoad": grip_servo_load,
+        "normalizedLoad": grip_load,
+        "gripState": grip_state_str,
+        "objectDetected": object_detected,
+    }
+
+    telemetry_records: List[Dict[str, Any]] = []
+    # Joint temperatures (6 sensors)
+    for i, temp in enumerate(joint_temps):
+        telemetry_records.append({
+            "seriesId": f"j{i + 1}-temp:{robot_id}",
+            "timestamp": ts,
+            "value": round(float(temp), 1),
+        })
+    # Vision confidence
+    telemetry_records.append({
+        "seriesId": f"vision-confidence:{robot_id}",
+        "timestamp": ts,
+        "value": round(float(vision_confidence), 4),
+    })
+    # Grip load
+    telemetry_records.append({
+        "seriesId": f"grip-load:{robot_id}",
+        "timestamp": ts,
+        "value": round(float(grip_load), 4),
+    })
+
+    # ── 4. Push to all three streams ──────────────────────────────
     if not settings.mock_foundry:
         ok_v = clients.push_to_stream(settings.vision_stream_rid, [vision_record])
         if not ok_v:
             logger.error("Failed to push VisionReading %s", vision_reading_id)
-    else:
-        logger.debug("[MOCK] Would push VisionReading %s", vision_reading_id)
 
-    # ── 4. Enqueue for Process 2 ──────────────────────────────────
+        ok_g = clients.push_to_stream(settings.grip_stream_rid, [grip_record])
+        if not ok_g:
+            logger.error("Failed to push GripReading %s", grip_reading_id)
+
+        ok_t = clients.push_to_stream(settings.telemetry_stream_rid, telemetry_records)
+        if not ok_t:
+            logger.error("Failed to push telemetry batch (%d records)", len(telemetry_records))
+    else:
+        logger.debug("[MOCK] Would push VisionReading + GripReading + %d telemetry records", len(telemetry_records))
+
+    # ── 5. Enqueue for Process 2 ──────────────────────────────────
     try:
         queue.put_nowait({
             "inspection_id": inspection_id,

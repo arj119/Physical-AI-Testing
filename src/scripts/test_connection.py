@@ -139,6 +139,17 @@ def check_commands(clients: FoundryClients, settings: Settings) -> bool:
         return False
 
 
+def check_telemetry_stream(clients: FoundryClients, settings: Settings) -> bool:
+    """Test 8: Push a single telemetry record to sensor-telemetry stream."""
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    record = {
+        "seriesId": f"j1-temp:{settings.robot_id}",
+        "timestamp": ts,
+        "value": 42.0,
+    }
+    return clients.push_to_stream(settings.telemetry_stream_rid, [record])
+
+
 def run_checks(settings: Settings, clients: FoundryClients) -> bool:
     """Run all connectivity checks. Returns True if all pass."""
     checks = [
@@ -147,6 +158,7 @@ def run_checks(settings: Settings, clients: FoundryClients) -> bool:
             clients, settings.vision_stream_rid, "vision")),
         ("Push to grip-readings stream", lambda: check_stream_push(
             clients, settings.grip_stream_rid, "grip")),
+        ("Push to sensor-telemetry stream", lambda: check_telemetry_stream(clients, settings)),
         ("OSDK read (Robot objects)", lambda: check_osdk_read(clients)),
         ("OSDK write (CreateInspectionEvent)", lambda: check_osdk_write(clients, settings)),
         ("Query ModelRegistry", lambda: check_model_registry(clients)),
@@ -223,6 +235,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
         accuracy=0.91,
         model_description="YOLOv5-nano baseline — 3-class widget detector",
         artifact_path="/models/yolov5n_widget_v1.onnx",
+        model_artifact_ref=Empty.value,
     )
 
     # ── 3. Inspection events + stream readings ────────────────────
@@ -330,7 +343,36 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     print(f"  Pushed {len(vision_batch)} VisionReadings to stream")
     print(f"  Pushed {len(grip_batch)} GripReadings to stream")
 
-    # ── 4. OperatorCommands ───────────────────────────────────────
+    # ── 4. Sensor telemetry ────────────────────────────────────────
+    print("  Pushing sensor telemetry data...")
+    telemetry_count = 0
+    for i in range(count):
+        ts = now - timedelta(hours=2) + (interval * i)
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+        robot_id = settings.robot_id
+
+        # Simulate warm-up: 35°C → 45°C over 2 hours
+        base_temp = 35 + (i / max(count, 1)) * 10
+
+        telemetry_batch = [
+            {"seriesId": f"vision-confidence:{robot_id}", "timestamp": ts_str,
+             "value": round(min(0.99, max(0.1, random.gauss(0.88, 0.08))), 4)},
+            {"seriesId": f"grip-load:{robot_id}", "timestamp": ts_str,
+             "value": round(min(0.99, max(0.01, random.gauss(0.30, 0.12))), 4)},
+        ]
+        for j in range(1, 7):
+            telemetry_batch.append({
+                "seriesId": f"j{j}-temp:{robot_id}",
+                "timestamp": ts_str,
+                "value": round(base_temp + random.gauss(0, 1.5), 1),
+            })
+
+        clients.push_to_stream(settings.telemetry_stream_rid, telemetry_batch)
+        telemetry_count += len(telemetry_batch)
+
+    print(f"  Pushed {telemetry_count} telemetry data points ({count} cycles x 8 sensors)")
+
+    # ── 5. OperatorCommands ───────────────────────────────────────
     print("  Creating sample OperatorCommands...")
     for cmd_type, ack in [("PAUSE", True), ("RESUME", True), ("UPDATE_TOLERANCE", False)]:
         cmd_id = f"cmd-{uuid.uuid4()}"
@@ -342,7 +384,6 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             payload=payload if payload else None,
         )
         if ack:
-            # Wait briefly for the command object to be indexed
             time.sleep(2)
             try:
                 clients.client.ontology.actions.acknowledge_command(
@@ -367,6 +408,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     print(f"      REVIEW:         ~{review_count} (PENDING_REVIEW)")
     print(f"    VisionReadings:   {count} (streamed)")
     print(f"    GripReadings:     {count} (streamed)")
+    print(f"    Telemetry:        {telemetry_count} data points (8 sensors)")
     print(f"    Commands:         3 (2 executed, 1 pending)")
     print(f"    Time span:        last 2 hours")
     print("=" * 60 + "\n")

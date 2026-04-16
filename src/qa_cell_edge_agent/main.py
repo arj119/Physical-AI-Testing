@@ -14,7 +14,7 @@ import os
 import signal
 import sys
 import time
-from multiprocessing import Event, Process, Queue
+from multiprocessing import Event, Manager, Process, Queue
 
 from dotenv import load_dotenv
 
@@ -64,18 +64,27 @@ def main() -> None:
     # Shared IPC primitives
     sensor_queue: Queue = Queue(maxsize=10)
     model_reload_event = Event()
+    manager = Manager()
+    sensor_state = manager.dict({
+        "grip_load": 0.0,
+        "grip_servo_load": 0.0,
+        "grip_state": "OPEN",
+        "object_detected": False,
+        "vision_confidence": 0.0,
+        "joint_temps": [0.0] * 6,
+    })
 
     # Start processes
     processes = {
         "sensor-push": Process(
             target=run_sensor_push,
-            args=(sensor_queue, settings),
+            args=(sensor_queue, sensor_state, settings),
             name="sensor-push",
             daemon=True,
         ),
         "defect-detection": Process(
             target=run_defect_detection,
-            args=(sensor_queue, model_reload_event, settings),
+            args=(sensor_queue, model_reload_event, sensor_state, settings),
             name="defect-detection",
             daemon=True,
         ),
@@ -111,14 +120,14 @@ def main() -> None:
                 if name == "sensor-push":
                     proc = Process(
                         target=run_sensor_push,
-                        args=(sensor_queue, settings),
+                        args=(sensor_queue, sensor_state, settings),
                         name=name,
                         daemon=True,
                     )
                 elif name == "defect-detection":
                     proc = Process(
                         target=run_defect_detection,
-                        args=(sensor_queue, model_reload_event, settings),
+                        args=(sensor_queue, model_reload_event, sensor_state, settings),
                         name=name,
                         daemon=True,
                     )

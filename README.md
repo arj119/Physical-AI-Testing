@@ -115,50 +115,67 @@ journalctl -u qa-cell-edge-agent -f
 ### Physical AI Loop
 
 ```
-                    ┌─────────────────────────────────────┐
-                    │          Palantir Foundry            │
-                    │                                     │
-                    │  Streams ← raw sensor data          │
-                    │  OSDK    ← inspection events        │
-                    │  Dashboard → operator commands       │
-                    │  ModelRegistry → retrained models    │
-                    └──────┬──────────────┬───────────────┘
-                           │              │
-                    push data up    pull commands +
-                                    models down
-                           │              │
-            ┌──────────────▼──────────────▼───────────────┐
-            │          Jetson Nano Edge Agent              │
-            │                                             │
-            │  sensor_push ──Queue──► defect_detection    │
-            │    (camera)              (arm + gripper     │
-            │                          + inference)       │
-            │                               ▲             │
-            │              model_upgrade ───┘ (reload)    │
-            └─────────────────────────────────────────────┘
+                    ┌──────────────────────────────────────────┐
+                    │            Palantir Foundry               │
+                    │                                          │
+                    │  vision-readings   ← camera thumbnails   │
+                    │  grip-readings     ← gripper load        │
+                    │  sensor-telemetry  ← temps, conf, load   │
+                    │  OSDK              ← inspection events   │
+                    │  Dashboard         → operator commands    │
+                    │  ModelRegistry     → retrained models     │
+                    └──────┬───────────────────┬───────────────┘
+                           │                   │
+                    push data up         pull commands +
+                                         models down
+                           │                   │
+            ┌──────────────▼───────────────────▼──────────────┐
+            │           Jetson Nano Edge Agent                 │
+            │                                                 │
+            │  Process 1 (sensor_push)                        │
+            │    camera capture                               │
+            │    read shared sensor state ◄─── Manager.dict   │
+            │    push ALL 3 streams @ 1Hz        ▲            │
+            │    enqueue frame ──Queue──►         │            │
+            │                            Process 2 (defect)   │
+            │                              owns serial port   │
+            │                              gripper + temps    │
+            │                              inference + fusion │
+            │                              arm pick-and-place │
+            │                              OSDK events        │
+            │                              writes sensor state│
+            │                                    ▲            │
+            │                     model_upgrade ─┘ (reload)   │
+            └─────────────────────────────────────────────────┘
 ```
 
-1. **Capture** — overhead camera frames + gripper servo load
-2. **Infer** — YOLOv5 on-device (ONNX dev / TensorRT prod)
-3. **Fuse** — combine vision confidence + grip load → PASS / FAIL / REVIEW
-4. **Sort** — arm picks part and places in the correct bin
-5. **Report** — push results to Foundry via OSDK
-6. **Defer** — uncertain decisions (REVIEW) go to a human operator in Foundry
-7. **Learn** — operator labels feed model retraining; Process 3 pulls updated
+1. **Capture** — overhead camera frame (Process 1, 1Hz)
+2. **Read** — gripper load + joint temperatures (Process 2, serial connection)
+3. **Stream** — push vision, grip, and telemetry to 3 Foundry streams (Process 1)
+4. **Infer** — YOLOv5 on-device (ONNX dev / TensorRT prod)
+5. **Fuse** — combine vision confidence + grip load → PASS / FAIL / REVIEW
+6. **Sort** — arm picks part and places in the correct bin
+7. **Report** — create InspectionEvent with captured image via OSDK
+8. **Defer** — uncertain decisions (REVIEW) go to a human operator in Foundry
+9. **Learn** — operator labels feed model retraining; Process 3 pulls updated
    models and hot-swaps them on the Jetson
 
 ### Architecture
 
-Three long-running processes managed by `main.py`:
+Three long-running processes managed by `main.py`, communicating via
+`multiprocessing.Queue` (frames), `multiprocessing.Event` (model reload),
+and `multiprocessing.Manager().dict()` (shared sensor state):
 
-| Process | Module | Purpose |
-|---------|--------|---------|
-| **1. Sensor Push** | `processes/sensor_push.py` | Camera capture → Foundry vision stream |
-| **2. Defect Detection** | `processes/defect_detection.py` | Gripper read + YOLOv5 inference + sensor fusion + arm control → OSDK actions |
-| **3. Model Upgrade** | `processes/model_upgrade.py` | Polls ModelRegistry → downloads + hot-swaps model |
+| Process | Module | Owns | Pushes |
+|---------|--------|------|--------|
+| **1. Sensor Push** | `sensor_push.py` | Camera, stream push | vision-readings, grip-readings, sensor-telemetry (all 3 streams @ 1Hz) |
+| **2. Defect Detection** | `defect_detection.py` | Serial port (arm + gripper), inference, OSDK | InspectionEvent actions, writes sensor state |
+| **3. Model Upgrade** | `model_upgrade.py` | Model download + conversion | Signals Process 2 to hot-reload |
 
-All serial I/O (arm + gripper) is consolidated in Process 2 via a shared
-`MyCobot280` connection singleton (`drivers/connection.py`).
+Process 2 owns the serial connection (`drivers/connection.py` singleton)
+and writes gripper load, joint temperatures, and vision confidence to a
+shared dict. Process 1 reads it every cycle and pushes all three streams
+— so telemetry flows continuously even when no parts are being inspected.
 
 ### Sensor Fusion
 
@@ -201,6 +218,7 @@ src/
 │   ├── config/
 │   │   ├── settings.py      # Centralised config from env vars + auto-discovery
 │   │   ├── foundry.py       # OSDK client (physical_ai_qa_cell_sdk) + stream push
+│   │   ├── sensors.py       # Sensor inventory (series IDs, types, locations)
 │   │   └── jetson.py        # Jetson Nano 2GB memory constraints
 │   ├── drivers/
 │   │   ├── discovery.py     # Auto-detect serial port + camera
@@ -250,6 +268,7 @@ are auto-discovered when not explicitly set.
 | `MYCOBOT_PORT` | auto-detected | Override with e.g. `/dev/ttyUSB0` |
 | `MYCOBOT_BAUD` | `115200` | Fixed for myCobot 280 M5Stack |
 | `CAMERA_DEVICE_INDEX` | auto-detected | Override with e.g. `0` |
+| `TELEMETRY_STREAM_RID` | see `.env.example` | Sensor telemetry time series stream |
 | `MOCK_HARDWARE` | `false` | Skip all hardware I/O |
 | `MOCK_FOUNDRY` | `false` | Skip all Foundry API calls |
 | `MODEL_PATH` | `./models/yolov5n.onnx` | Path to ONNX or TensorRT engine |
@@ -276,6 +295,9 @@ VisionReading, GripReading
 `update_robot_status`, `acknowledge_command`, `send_command`, `publish_model`,
 `review_inspection_event`
 
-**Streams:** vision-readings, grip-readings (v2 high-scale streams API)
+**Streams:** vision-readings, grip-readings, sensor-telemetry (v2 high-scale streams API)
+
+**Telemetry series:** `j1-temp` through `j6-temp` (joint temps), `vision-confidence`,
+`grip-load` — 8 scalar readings per cycle, format `{metric}:{robot_id}`
 
 **Operator Commands:** PAUSE, RESUME, E_STOP, UPDATE_TOLERANCE

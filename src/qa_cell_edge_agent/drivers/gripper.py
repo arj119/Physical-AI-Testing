@@ -98,6 +98,19 @@ class Gripper:
         self._grip_state = "RELEASING"
         self.open_gripper()
 
+    def read_joint_temperatures(self) -> list[float]:
+        """Read servo temperatures for joints 1-6. Returns 6 floats in degrees C."""
+        if self.mock:
+            return [round(random.gauss(40.0, 5.0), 1) for _ in range(6)]
+        try:
+            temps = self._mc.get_joints_temperature()
+            if temps and len(temps) >= 6:
+                return [float(t) for t in temps[:6]]
+            return [0.0] * 6
+        except Exception as exc:
+            logger.warning("Failed to read joint temps: %s", exc)
+            return [0.0] * 6
+
     # ── internals ─────────────────────────────────────────────────────
 
     def _mock_read(self) -> GripData:
