@@ -190,14 +190,29 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     print(f"\n  Seeding {count} inspection events + supporting data...\n")
     now = datetime.now(timezone.utc)
 
-    # ── 1. Robot status ──────────────────────────────────────────────
-    print("  Updating Robot status...")
-    clients.client.ontology.actions.update_robot_status(
-        robot=settings.robot_id,
-        status="RUNNING",
-        current_model_version="v1.0.0",
-        total_inspections=count,
-    )
+    # ── 1. Ensure Robot exists, then update status ─────────────────────
+    print("  Ensuring Robot exists...")
+    robots = clients.client.ontology.objects.Robot.take(100)
+    robot_exists = any(r.robot_id == settings.robot_id for r in robots)
+
+    if not robot_exists:
+        print(f"  Robot {settings.robot_id} not found — creating...")
+        clients.client.ontology.actions.create_robot(
+            robot_id=settings.robot_id,
+            name=settings.robot_name,
+            status="RUNNING",
+            current_model_version="v1.0.0",
+            grip_tolerance=settings.grip_tolerance,
+        )
+        print(f"  Robot created: {settings.robot_id}")
+    else:
+        print(f"  Robot exists — updating status...")
+        clients.client.ontology.actions.update_robot_status(
+            robot=settings.robot_id,
+            status="RUNNING",
+            current_model_version="v1.0.0",
+            total_inspections=count,
+        )
 
     # ── 2. Model Registry entry ───────────────────────────────────
     print("  Publishing model v1.0.0...")
@@ -327,10 +342,15 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             payload=payload if payload else None,
         )
         if ack:
-            clients.client.ontology.actions.acknowledge_command(
-                command=cmd_id,
-                new_status="EXECUTED",
-            )
+            # Wait briefly for the command object to be indexed
+            time.sleep(2)
+            try:
+                clients.client.ontology.actions.acknowledge_command(
+                    command=cmd_id,
+                    new_status="EXECUTED",
+                )
+            except Exception as exc:
+                logger.warning("Could not acknowledge %s (eventual consistency): %s", cmd_id, exc)
 
     # ── Summary ───────────────────────────────────────────────────
     pass_count = int(count * 0.70)
