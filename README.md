@@ -17,20 +17,46 @@ git clone <foundry-git-url> qa-cell-edge-agent
 cd qa-cell-edge-agent
 python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+pip install -e src/            # install the package in editable mode
 ```
 
 ### 2. Configure Foundry
 
 ```bash
 cp .env.example .env
-# Edit .env — set FOUNDRY_URL, CLIENT_ID, CLIENT_SECRET, stream RIDs
+# Edit .env — set FOUNDRY_URL, CLIENT_ID, CLIENT_SECRET
 ```
 
 Hardware (serial port, camera) is **auto-discovered** — no need to set
 `MYCOBOT_PORT` or `CAMERA_DEVICE_INDEX` unless auto-detection picks the
 wrong device.
 
-### 3. Run in Mock Mode (no hardware needed)
+### 3. Register the Robot
+
+Register the robot and its sensors in Foundry (run once per robot):
+
+```bash
+python scripts/register_robot.py
+```
+
+This creates the Robot object and two Sensor objects (camera + gripper) in
+the ontology. You can also specify a custom ID:
+
+```bash
+python scripts/register_robot.py --robot-id qa-cell-02 --name "QA Cell Robot 02"
+```
+
+### 4. Verify Connectivity + Seed Demo Data
+
+```bash
+# Run 7-point connectivity check (OAuth2, streams, OSDK read/write, queries)
+python scripts/test_connection.py
+
+# Seed 40 realistic inspection events + stream data
+python scripts/test_connection.py --seed --count 40
+```
+
+### 5. Run in Mock Mode (no hardware needed)
 
 ```bash
 # Full mock — synthetic sensor data, no Foundry calls
@@ -40,7 +66,7 @@ python -m qa_cell_edge_agent.main --mock
 You should see all three processes start and the defect detection loop
 running with mock inference, fusion decisions, and pick-and-place logging.
 
-### 4. Run with a Real Model (still no hardware)
+### 6. Run with a Real Model (still no hardware)
 
 ```bash
 # Download YOLOv5-nano ONNX (pretrained on COCO, ~4 MB)
@@ -53,15 +79,12 @@ python -m qa_cell_edge_agent.main --mock-hardware
 COCO detections map to `widget_unknown` — replace with a fine-tuned model
 for `widget_good` / `widget_defect` classes in production.
 
-### 5. Set Up the Physical Robot
+### 7. Set Up the Physical Robot
 
 Plug in the myCobot 280 AI Kit via USB. The agent auto-detects the serial
 port (CP210x / CH340 USB-serial chip) and camera.
 
 ```bash
-# Verify Foundry connectivity + seed demo data
-python scripts/test_connection.py --seed
-
 # Calibrate arm waypoints for your AI Kit bin layout
 python scripts/calibrate_arm.py
 
@@ -75,7 +98,7 @@ python -m qa_cell_edge_agent.main --mock-foundry
 python -m qa_cell_edge_agent.main
 ```
 
-### 6. Deploy as a Service (Jetson)
+### 8. Deploy as a Service (Jetson)
 
 ```bash
 sudo cp systemd/qa-cell-edge-agent.service systemd/qa-cell-edge-agent.target /etc/systemd/system/
@@ -177,7 +200,7 @@ src/
 ├── qa_cell_edge_agent/
 │   ├── config/
 │   │   ├── settings.py      # Centralised config from env vars + auto-discovery
-│   │   ├── foundry.py       # OAuth2 + Foundry stream/OSDK clients
+│   │   ├── foundry.py       # OSDK client (physical_ai_qa_cell_sdk) + stream push
 │   │   └── jetson.py        # Jetson Nano 2GB memory constraints
 │   ├── drivers/
 │   │   ├── discovery.py     # Auto-detect serial port + camera
@@ -196,7 +219,8 @@ src/
 │   │   └── model_upgrade.py
 │   └── main.py              # Process orchestrator
 ├── scripts/
-│   ├── test_connection.py   # Foundry connectivity check + seed data
+│   ├── register_robot.py    # One-time robot + sensor registration in Foundry
+│   ├── test_connection.py   # 7-point connectivity check + seed data
 │   ├── calibrate_arm.py     # Record arm waypoints for bin layout
 │   ├── calibrate_camera.py  # Camera-to-robot calibration (homography / hand-eye)
 │   └── download_model.py    # Fetch YOLOv5n ONNX for local testing
@@ -208,7 +232,8 @@ src/
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/test_connection.py` | Verify Foundry OAuth2, streams, OSDK. `--seed` generates demo data |
+| `scripts/register_robot.py` | One-time setup: creates Robot + Sensors in Foundry. `--robot-id` / `--name` to override |
+| `scripts/test_connection.py` | 7-point Foundry connectivity check. `--seed --count N` generates demo data |
 | `scripts/calibrate_arm.py` | Interactive: move arm to each waypoint, records joint angles to `waypoints.json` |
 | `scripts/calibrate_camera.py` | Camera-to-robot calibration. `--method homography` (flat surface) or `--method handeye` (ArUco) |
 | `scripts/download_model.py` | Downloads `yolov5n.onnx` (~4 MB) for local inference testing |
@@ -238,9 +263,19 @@ are auto-discovered when not explicitly set.
 pytest src/test/ -v
 ```
 
-## Foundry Resources
+## Foundry Integration
 
-- **Streams:** vision-readings, grip-readings
-- **OSDK Actions:** CreateInspectionEvent, UpdateRobotStatus, AcknowledgeCommand
-- **Operator Commands:** PAUSE, RESUME, E_STOP, UPDATE_TOLERANCE
-- **Model source:** ModelRegistry object type
+Uses `physical_ai_qa_cell_sdk` (v0.5.0) — a generated typed Python SDK for
+the QA Cell ontology. All action calls and object queries go through the SDK
+with correct parameter names and type safety.
+
+**Object types:** Robot, Sensor, InspectionEvent, OperatorCommand, ModelRegistry,
+VisionReading, GripReading
+
+**Actions:** `create_robot`, `create_sensor`, `create_inspection_event`,
+`update_robot_status`, `acknowledge_command`, `send_command`, `publish_model`,
+`review_inspection_event`
+
+**Streams:** vision-readings, grip-readings (v2 high-scale streams API)
+
+**Operator Commands:** PAUSE, RESUME, E_STOP, UPDATE_TOLERANCE
