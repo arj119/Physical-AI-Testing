@@ -2,7 +2,7 @@
 actions and object queries, raw ``requests.Session`` for stream push.
 
 The SDK's ``ConfidentialClientAuth`` manages OAuth2 token refresh automatically.
-The same auth token is reused for stream push via ``auth.get_token()``.
+Stream push uses a separate token scoped to ``api:use-streams-write``.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+from physical_ai_qa_cell_sdk import ConfidentialClientAuth, FoundryClient
 
 from qa_cell_edge_agent.config.settings import Settings
 
@@ -26,21 +27,6 @@ OSDK_SCOPES = [
     "api:use-mediasets-read",
     "api:use-mediasets-write",
 ]
-
-# Lazy imports — avoid import errors when SDK isn't installed (e.g. in tests)
-_FoundryClient = None
-_ConfidentialClientAuth = None
-
-
-def _ensure_sdk():
-    global _FoundryClient, _ConfidentialClientAuth
-    if _FoundryClient is None:
-        from physical_ai_qa_cell_sdk import (
-            ConfidentialClientAuth,
-            FoundryClient,
-        )
-        _FoundryClient = FoundryClient
-        _ConfidentialClientAuth = ConfidentialClientAuth
 
 
 class FoundryClients:
@@ -65,8 +51,7 @@ class FoundryClients:
     def auth(self):
         """``ConfidentialClientAuth`` with auto-refresh for OSDK operations."""
         if self._auth is None:
-            _ensure_sdk()
-            self._auth = _ConfidentialClientAuth(
+            self._auth = ConfidentialClientAuth(
                 client_id=self.settings.client_id,
                 client_secret=self.settings.client_secret,
                 hostname=self.settings.foundry_url,
@@ -79,8 +64,7 @@ class FoundryClients:
     def client(self):
         """Typed OSDK ``FoundryClient`` for actions and object queries."""
         if self._client is None:
-            _ensure_sdk()
-            self._client = _FoundryClient(
+            self._client = FoundryClient(
                 auth=self.auth,
                 hostname=self.settings.foundry_url,
             )

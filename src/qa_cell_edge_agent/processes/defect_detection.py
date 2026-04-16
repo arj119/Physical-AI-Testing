@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import time
 import uuid
 from datetime import datetime, timezone
@@ -107,7 +108,7 @@ def run_defect_detection(
             # ── Dequeue sensor data ───────────────────────────────
             try:
                 item = queue.get(timeout=2.0)
-            except Exception:
+            except queue.Empty:
                 continue  # nothing in queue — loop back to poll commands
 
             cycle_start = time.monotonic()

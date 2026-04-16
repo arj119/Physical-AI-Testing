@@ -70,8 +70,12 @@ class Settings:
     grip_tolerance: float = field(
         default_factory=lambda: float(os.environ.get("GRIP_TOLERANCE", "0.65"))
     )
-    command_poll_interval_sec: float = 1.0
-    heartbeat_interval_sec: float = 5.0
+    command_poll_interval_sec: float = field(
+        default_factory=lambda: float(os.environ.get("COMMAND_POLL_INTERVAL_SEC", "1.0"))
+    )
+    heartbeat_interval_sec: float = field(
+        default_factory=lambda: float(os.environ.get("HEARTBEAT_INTERVAL_SEC", "5.0"))
+    )
 
     # ── Model management (Process 3) ──────────────────────────────────
     model_path: str = field(
@@ -81,8 +85,6 @@ class Settings:
         default_factory=lambda: float(os.environ.get("MODEL_POLL_INTERVAL_SEC", "60"))
     )
     model_staging_dir: str = "./models/staging/"
-    trtexec_path: str = "/usr/src/tensorrt/bin/trtexec"
-    enable_auto_upgrade: bool = True
 
     # ── Hardware ──────────────────────────────────────────────────────
     mycobot_port: str = field(

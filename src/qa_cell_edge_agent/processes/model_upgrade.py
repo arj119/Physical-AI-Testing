@@ -33,16 +33,15 @@ def run_model_upgrade(
     current_version: str = "v1.0.0"
 
     logger.info(
-        "model_upgrade started — poll_interval=%ds, auto_upgrade=%s",
+        "model_upgrade started — poll_interval=%ds",
         settings.model_poll_interval_sec,
-        settings.enable_auto_upgrade,
     )
 
     os.makedirs(settings.model_staging_dir, exist_ok=True)
 
     while True:
         try:
-            if settings.enable_auto_upgrade and not settings.mock_foundry:
+            if not settings.mock_foundry:
                 new_version = _check_and_upgrade(
                     settings, clients, current_version, reload_event
                 )
@@ -88,7 +87,13 @@ def _check_and_upgrade(
     latest = models[0]
     latest_version = latest.version or ""
 
-    if latest_version <= current_version:
+    try:
+        from packaging.version import Version
+        is_newer = Version(latest_version.lstrip("v")) > Version(current_version.lstrip("v"))
+    except Exception:
+        is_newer = latest_version != current_version
+
+    if not is_newer:
         logger.debug("Already on latest model %s", current_version)
         return None
 

@@ -104,9 +104,9 @@ class FusionEngine:
     ) -> None:
         """Hot-update thresholds (called when an UPDATE_TOLERANCE command arrives)."""
         if confidence_threshold is not None:
-            self.confidence_threshold = confidence_threshold
+            self.confidence_threshold = max(0.0, min(1.0, confidence_threshold))
         if grip_tolerance is not None:
-            self.grip_tolerance = grip_tolerance
+            self.grip_tolerance = max(0.0, min(1.0, grip_tolerance))
         logger.info(
             "Thresholds updated — confidence_threshold=%.2f, grip_tolerance=%.2f",
             self.confidence_threshold,
