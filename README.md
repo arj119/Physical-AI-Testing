@@ -16,15 +16,26 @@ USB camera + sorting bins), NVIDIA Jetson Nano 2GB
 git clone <foundry-git-url> qa-cell-edge-agent
 cd qa-cell-edge-agent
 python3 -m venv venv && source venv/bin/activate
-pip install -r requirements.txt
-pip install -e src/            # install the package in editable mode
+
+# The OSDK package is from a private Foundry artifact repo:
+pip install -r requirements.txt --extra-index-url https://<your-stack>.palantirfoundry.com/artifacts/api/repositories/<repo-rid>/contents/release/pypi/simple
+
+pip install -e src/
+```
+
+On **Jetson Nano 2GB**, also install the GPU dependencies (these take a while):
+```bash
+# pycuda compiles from source — expect ~30 min on Nano 2GB
+pip install pycuda>=2022.1
+# PyTorch: use the official Jetson wheel from NVIDIA
+pip install torch -f https://developer.download.nvidia.com/compute/redist/jp/
 ```
 
 ### 2. Configure Foundry
 
 ```bash
 cp .env.example .env
-# Edit .env — set FOUNDRY_URL, CLIENT_ID, CLIENT_SECRET
+# Edit .env — REQUIRED: FOUNDRY_URL, CLIENT_ID, CLIENT_SECRET, stream RIDs
 ```
 
 Hardware (serial port, camera) is **auto-discovered** — no need to set
@@ -81,10 +92,13 @@ for `widget_good` / `widget_defect` classes in production.
 
 ### 7. Set Up the Physical Robot
 
-Plug in the myCobot 280 AI Kit via USB. The agent auto-detects the serial
-port (CP210x / CH340 USB-serial chip) and camera.
+Plug in the myCobot 280 AI Kit via USB. **On Jetson, add your user to the
+serial port group first:** `sudo usermod -aG dialout $USER` (then log out/in).
 
 ```bash
+# Verify hardware is detected and responding
+python scripts/verify_hardware.py
+
 # Calibrate arm waypoints for your AI Kit bin layout
 python scripts/calibrate_arm.py
 
@@ -101,6 +115,13 @@ python -m qa_cell_edge_agent.main
 ### 8. Deploy as a Service (Jetson)
 
 ```bash
+# Prerequisites
+sudo usermod -aG dialout jetson          # serial port access
+sudo cp -r . /opt/qa-cell-edge-agent     # deploy to /opt
+sudo chown -R jetson:jetson /opt/qa-cell-edge-agent
+cp .env /opt/qa-cell-edge-agent/.env     # copy credentials
+
+# Install systemd service
 sudo cp systemd/qa-cell-edge-agent.service systemd/qa-cell-edge-agent.target /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable qa-cell-edge-agent.target
@@ -250,8 +271,9 @@ src/
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/register_robot.py` | One-time setup: creates Robot + Sensors in Foundry. `--robot-id` / `--name` to override |
-| `scripts/test_connection.py` | 7-point Foundry connectivity check. `--seed --count N` generates demo data |
+| `scripts/verify_hardware.py` | Pre-flight check: serial port + camera detection, myCobot communication, temps |
+| `scripts/register_robot.py` | One-time setup: creates Robot in Foundry. `--robot-id` / `--name` to override |
+| `scripts/test_connection.py` | 8-point Foundry connectivity check. `--seed --count N` generates demo data |
 | `scripts/calibrate_arm.py` | Interactive: move arm to each waypoint, records joint angles to `waypoints.json` |
 | `scripts/calibrate_camera.py` | Camera-to-robot calibration. `--method homography` (flat surface) or `--method handeye` (ArUco) |
 | `scripts/download_model.py` | Downloads `yolov5n.onnx` (~4 MB) for local inference testing |

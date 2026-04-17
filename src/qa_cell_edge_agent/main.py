@@ -61,6 +61,30 @@ def main() -> None:
     logger.info("  Capture rate:   %.1f Hz", 1.0 / settings.capture_interval_sec)
     logger.info("=" * 60)
 
+    # ── Startup checks ───────────────────────────────────────────
+    if not settings.mock_foundry:
+        if not settings.client_id or not settings.client_secret:
+            logger.error("CLIENT_ID and CLIENT_SECRET must be set in .env for Foundry mode")
+            sys.exit(1)
+
+    if not settings.mock_hardware:
+        import os as _os
+        waypoints_file = _os.path.join(
+            _os.path.dirname(__file__), "drivers", "waypoints.json"
+        )
+        if not _os.path.isfile(waypoints_file):
+            logger.warning(
+                "WARNING: waypoints.json not found — using default placeholder positions. "
+                "Run 'python scripts/calibrate_arm.py' for your AI Kit bin layout."
+            )
+
+    if not os.path.isfile(settings.model_path):
+        logger.warning(
+            "WARNING: Model file not found at %s — inference will use mock mode. "
+            "Run 'python scripts/download_model.py' to fetch a test model.",
+            settings.model_path,
+        )
+
     # Shared IPC primitives
     sensor_queue: Queue = Queue(maxsize=10)
     model_reload_event = Event()

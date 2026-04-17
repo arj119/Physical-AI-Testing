@@ -107,8 +107,19 @@ client.ontology.actions.create_inspection_event(..., captured_image_ref=Empty.va
 
 | Script | When to use |
 |--------|------------|
+| `verify_hardware.py` | Before calibration — checks serial port + camera are working |
 | `register_robot.py` | Once per robot, before anything else |
 | `test_connection.py` | Verify Foundry connectivity. `--seed --count N` for demo data |
-| `calibrate_arm.py` | After physical setup — records bin waypoints |
+| `calibrate_arm.py` | After verify_hardware — records bin waypoints |
 | `calibrate_camera.py` | For vision-guided picking (optional) |
 | `download_model.py` | Fetch YOLOv5n ONNX for local testing |
+
+## Deployment (Jetson)
+
+```bash
+sudo usermod -aG dialout jetson    # serial port access (then logout/login)
+sudo cp -r . /opt/qa-cell-edge-agent
+sudo chown -R jetson:jetson /opt/qa-cell-edge-agent
+```
+
+The `physical-ai-qa-cell-sdk` package needs `--extra-index-url` from your Foundry stack.

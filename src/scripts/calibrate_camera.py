@@ -40,18 +40,46 @@ def _connect_robot():
     port = os.getenv("MYCOBOT_PORT", "/dev/ttyUSB0")
     baud = int(os.getenv("MYCOBOT_BAUD", "115200"))
     print(f"Connecting to myCobot on {port} @ {baud}...")
-    mc = MyCobot280(port, baud)
-    time.sleep(0.5)
+    try:
+        mc = MyCobot280(port, baud)
+        time.sleep(0.5)
+    except Exception as exc:
+        print(f"ERROR: Cannot open serial port {port}: {exc}")
+        if "Permission denied" in str(exc):
+            print("  Fix: sudo usermod -aG dialout $USER && logout/login")
+        print("  Run 'python scripts/verify_hardware.py' first.")
+        sys.exit(1)
+
+    # Validate communication
+    try:
+        angles = mc.get_angles()
+        if not angles or len(angles) != 6:
+            print(f"WARNING: myCobot returned angles={angles} — may not be responding")
+    except Exception as exc:
+        print(f"ERROR: Cannot communicate with myCobot: {exc}")
+        sys.exit(1)
+
     return mc
 
 
 def _open_camera():
-    """Open the USB camera."""
+    """Open the USB camera and verify it captures frames."""
     idx = int(os.getenv("CAMERA_DEVICE_INDEX", "0"))
     cap = cv2.VideoCapture(idx)
     if not cap.isOpened():
         print(f"ERROR: Cannot open camera at index {idx}")
+        print("  Run 'python scripts/verify_hardware.py' to check camera.")
         sys.exit(1)
+
+    ret, frame = cap.read()
+    if not ret or frame is None:
+        cap.release()
+        print(f"ERROR: Camera at index {idx} opened but cannot capture frames")
+        print("  Fix: Check camera USB connection. Try a different CAMERA_DEVICE_INDEX.")
+        sys.exit(1)
+
+    h, w = frame.shape[:2]
+    print(f"Camera opened: index {idx}, {w}x{h}")
     return cap
 
 
@@ -67,12 +95,12 @@ def calibrate_homography(num_points: int = 6) -> dict:
     mc = _connect_robot()
     cap = _open_camera()
 
-    print(f"\n=== Homography Calibration ({num_points} points) ===")
+    print(f"\n=== Homography Calibration ({num_points} points, min 4 required) ===")
     print("For each point:")
     print("  1. Move the arm so the end-effector tip touches the workspace surface")
     print("  2. Press ENTER to record the robot position")
     print("  3. Click the corresponding point in the camera window")
-    print()
+    print("Press Ctrl+C to abort without saving.\n")
 
     robot_points = []  # [[x, y], ...]
     pixel_points = []  # [[cx, cy], ...]
