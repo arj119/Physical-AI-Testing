@@ -2,9 +2,11 @@
 """Test Connection & Seed Data Script.
 
 Usage:
-    python scripts/test_connection.py                  # connectivity checks only
-    python scripts/test_connection.py --seed            # checks + seed 50 events
-    python scripts/test_connection.py --seed --count 20 # checks + seed 20 events
+    python scripts/test_connection.py                           # connectivity checks only
+    python scripts/test_connection.py --seed                    # checks + seed 50 events (placeholder images)
+    python scripts/test_connection.py --seed --count 20         # checks + seed 20 events
+    python scripts/test_connection.py --seed --camera           # use live camera for images
+    python scripts/test_connection.py --seed --camera --count 10
 """
 
 from __future__ import annotations
@@ -21,6 +23,10 @@ from typing import Any, Dict, List
 
 from dotenv import load_dotenv
 
+import base64
+import io
+
+import numpy as np
 from foundry_sdk_runtime.types.null_types import Empty
 
 from qa_cell_edge_agent.config.settings import Settings
@@ -193,14 +199,93 @@ def run_checks(settings: Settings, clients: FoundryClients) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# Image helpers
+# ═══════════════════════════════════════════════════════════════════════
+
+_DECISION_COLORS = {
+    "PASS": (0, 180, 0),      # green (BGR)
+    "FAIL": (0, 0, 200),      # red
+    "REVIEW": (0, 180, 220),  # yellow
+}
+
+
+def _generate_placeholder_image(decision: str, inspection_id: str) -> np.ndarray:
+    """Create a 640x480 colored placeholder image with decision text."""
+    import cv2
+    color = _DECISION_COLORS.get(decision, (128, 128, 128))
+    img = np.full((480, 640, 3), color, dtype=np.uint8)
+    # Add noise for realism
+    noise = np.random.randint(-20, 20, img.shape, dtype=np.int16)
+    img = np.clip(img.astype(np.int16) + noise, 0, 255).astype(np.uint8)
+    # Add text overlay
+    cv2.putText(img, decision, (180, 260), cv2.FONT_HERSHEY_SIMPLEX, 2.5, (255, 255, 255), 4)
+    cv2.putText(img, inspection_id[:20], (120, 320), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+    cv2.putText(img, "SEED DATA", (220, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+    return img
+
+
+def _frame_to_thumbnail_b64(frame: np.ndarray, size: tuple = (64, 64)) -> str:
+    """Resize frame to thumbnail and encode as base64 JPEG."""
+    import cv2
+    thumb = cv2.resize(frame, size, interpolation=cv2.INTER_AREA)
+    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    return base64.b64encode(buf.tobytes()).decode("ascii")
+
+
+def _frame_to_jpeg_bytes(frame: np.ndarray) -> bytes:
+    """Encode frame as full-resolution JPEG bytes."""
+    import cv2
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return buf.tobytes()
+
+
+def _upload_image(clients: FoundryClients, jpeg_bytes: bytes, filename: str):
+    """Upload JPEG bytes as a MediaReference. Returns MediaReference or Empty.value."""
+    try:
+        from foundry_sdk_runtime import AllowBetaFeatures
+        with AllowBetaFeatures():
+            return clients.client.ontology.media.upload_media(jpeg_bytes, filename)
+    except Exception as exc:
+        logger.warning("Image upload failed: %s", exc)
+        return Empty.value
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # Seed data generation
 # ═══════════════════════════════════════════════════════════════════════
 
-def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
+def seed_data(
+    settings: Settings,
+    clients: FoundryClients,
+    count: int,
+    use_camera: bool = False,
+) -> None:
     """Generate and push realistic seed data to Foundry."""
 
     print(f"\n  Seeding {count} inspection events + supporting data...\n")
     now = datetime.now(timezone.utc)
+
+    # ── Camera setup (if --camera flag) ──────────────────────────
+    camera = None
+    if use_camera:
+        try:
+            import cv2
+            cap = cv2.VideoCapture(settings.camera_device_index)
+            if cap.isOpened():
+                ret, test_frame = cap.read()
+                if ret:
+                    camera = cap
+                    h, w = test_frame.shape[:2]
+                    print(f"  Using live camera: index {settings.camera_device_index} ({w}x{h})")
+                else:
+                    cap.release()
+                    print(f"  Camera opened but cannot read frames — using placeholders")
+            else:
+                print(f"  Cannot open camera at index {settings.camera_device_index} — using placeholders")
+        except ImportError:
+            print(f"  OpenCV not available — using placeholder images")
+    else:
+        print("  Using placeholder images (pass --camera to use live camera)")
 
     # ── 1. Ensure Robot exists, then update status ─────────────────────
     print("  Ensuring Robot exists...")
@@ -283,6 +368,20 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
         x, y = random.randint(50, 400), random.randint(50, 300)
         w, h = random.randint(60, 150), random.randint(60, 150)
 
+        # Capture or generate image
+        if camera is not None:
+            ret, frame = camera.read()
+            if not ret:
+                frame = _generate_placeholder_image(decision, inspection_id)
+        else:
+            frame = _generate_placeholder_image(decision, inspection_id)
+
+        thumbnail_b64 = _frame_to_thumbnail_b64(frame)
+        jpeg_bytes = _frame_to_jpeg_bytes(frame)
+
+        # Upload full image as MediaReference
+        media_ref = _upload_image(clients, jpeg_bytes, f"{inspection_id}.jpg")
+
         # Stream records
         vision_batch.append({
             "readingId": vr_id,
@@ -294,7 +393,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             "boundingBox": [float(x), float(y), float(w), float(h)],
             "inferenceTimeMs": random.randint(25, 55),
             "modelVersion": "v1.0.0",
-            "thumbnailBase64": "",
+            "thumbnailBase64": thumbnail_b64,
         })
         grip_batch.append({
             "readingId": gr_id,
@@ -321,7 +420,7 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             model_version="v1.0.0",
             cycle_time_ms=cycle_time,
             review_status=review_status,
-            captured_image_ref=Empty.value,
+            captured_image_ref=media_ref,
         )
 
         progress = f"  [{i + 1}/{count}] {inspection_id[:20]}... -> {decision}"
@@ -393,10 +492,15 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
             except Exception as exc:
                 logger.warning("Could not acknowledge %s (eventual consistency): %s", cmd_id, exc)
 
+    # ── Cleanup ────────────────────────────────────────────────────
+    if camera is not None:
+        camera.release()
+
     # ── Summary ───────────────────────────────────────────────────
     pass_count = int(count * 0.70)
     fail_count = int(count * 0.20)
     review_count = count - pass_count - fail_count
+    image_source = "live camera" if use_camera and camera is not None else "placeholders"
 
     print("\n" + "=" * 60)
     print("  Seed Data Complete!")
@@ -406,7 +510,8 @@ def seed_data(settings: Settings, clients: FoundryClients, count: int) -> None:
     print(f"      PASS:           ~{pass_count}")
     print(f"      FAIL:           ~{fail_count}")
     print(f"      REVIEW:         ~{review_count} (PENDING_REVIEW)")
-    print(f"    VisionReadings:   {count} (streamed)")
+    print(f"    Images:           {count} uploaded ({image_source})")
+    print(f"    VisionReadings:   {count} (streamed, with thumbnails)")
     print(f"    GripReadings:     {count} (streamed)")
     print(f"    Telemetry:        {telemetry_count} data points (8 sensors)")
     print(f"    Commands:         3 (2 executed, 1 pending)")
@@ -424,6 +529,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="QA Cell — Test Connection & Seed Data")
     parser.add_argument("--seed", action="store_true", help="Seed demo data after checks")
     parser.add_argument("--count", type=int, default=50, help="Number of inspections to seed (default: 50)")
+    parser.add_argument("--camera", action="store_true", help="Use live camera for seed images (default: placeholders)")
     args = parser.parse_args()
 
     settings = Settings()
@@ -435,7 +541,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.seed:
-        seed_data(settings, clients, args.count)
+        seed_data(settings, clients, args.count, use_camera=args.camera)
 
 
 if __name__ == "__main__":
