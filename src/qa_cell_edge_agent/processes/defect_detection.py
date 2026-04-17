@@ -35,15 +35,15 @@ logger = logging.getLogger(__name__)
 class RobotState:
     """Mutable state machine for the robot's operational mode.
 
-    The edge agent reports its current operational state via heartbeat.
     Status transitions are driven by operator commands from Foundry
-    (PAUSE/RESUME/E_STOP). The OFFLINE status is set on graceful shutdown.
+    (PAUSE/RESUME/E_STOP). The heartbeat carries the current status +
+    total_inspections — Foundry derives IDLE/OFFLINE from heartbeat
+    timestamps and inspection rate.
     """
 
     RUNNING = "RUNNING"
     PAUSED = "PAUSED"
     E_STOPPED = "E_STOPPED"
-    OFFLINE = "OFFLINE"
 
     def __init__(self) -> None:
         self.status: str = self.RUNNING
