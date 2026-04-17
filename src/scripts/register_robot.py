@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Register a robot and its sensors in Foundry.
+"""Register a robot in Foundry.
 
 Run once during initial setup before starting the edge agent or seeding data.
+Sensors are created automatically by the Pipeline Builder pipeline in Foundry
+when telemetry data flows through the sensor-telemetry stream.
 
 Usage:
     python scripts/register_robot.py                      # uses defaults from .env
@@ -12,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-import uuid
 
 from dotenv import load_dotenv
 
@@ -37,7 +38,6 @@ def main() -> None:
     print(f"\n  Registering robot: {robot_id} ({robot_name})")
     print("=" * 60)
 
-    # ── 1. Create Robot ──────────────────────────────────────────────
     try:
         clients.client.ontology.actions.create_robot(
             robot_id=robot_id,
@@ -54,45 +54,9 @@ def main() -> None:
             print(f"  Failed to create robot: {exc}")
             sys.exit(1)
 
-    # ── 2. Create default sensors ────────────────────────────────────
-    sensors = [
-        {
-            "sensor_id": f"{robot_id}-camera",
-            "sensor_name": f"Camera - {robot_name}",
-            "sensor_type": "USB_CAMERA",
-            "location": "overhead",
-            "units": "px",
-        },
-        {
-            "sensor_id": f"{robot_id}-gripper",
-            "sensor_name": f"Gripper - {robot_name}",
-            "sensor_type": "SERVO_LOAD",
-            "location": "gripper",
-            "units": "N",
-        },
-    ]
-
-    for sensor in sensors:
-        try:
-            clients.client.ontology.actions.create_sensor(
-                sensor_id=sensor["sensor_id"],
-                sensor_name=sensor["sensor_name"],
-                robot_id=robot_id,
-                sensor_type=sensor["sensor_type"],
-                status="ACTIVE",
-                location=sensor["location"],
-                units=sensor["units"],
-            )
-            print(f"  Sensor created: {sensor['sensor_id']} ({sensor['sensor_type']})")
-        except Exception as exc:
-            if "AlreadyExists" in str(exc) or "CONFLICT" in str(exc):
-                print(f"  Sensor already exists: {sensor['sensor_id']} (skipping)")
-            else:
-                print(f"  Failed to create sensor {sensor['sensor_id']}: {exc}")
-
-    # ── Done ─────────────────────────────────────────────────────────
     print("=" * 60)
     print(f"  Registration complete for {robot_id}")
+    print(f"  Sensors will be created automatically when telemetry data flows.")
     print(f"\n  Next steps:")
     print(f"    python scripts/test_connection.py          # verify connectivity")
     print(f"    python scripts/test_connection.py --seed    # seed demo data")
