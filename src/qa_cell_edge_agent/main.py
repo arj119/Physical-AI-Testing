@@ -143,7 +143,20 @@ def main() -> None:
                 logger.info("Restarted %s (PID %d)", name, proc.pid)
         time.sleep(5)
 
-    # Shutdown
+    # Shutdown — set robot status to OFFLINE before terminating
+    logger.info("Setting robot status to OFFLINE...")
+    if not settings.mock_foundry:
+        try:
+            from qa_cell_edge_agent.config.foundry import FoundryClients
+            clients = FoundryClients(settings=settings)
+            clients.client.ontology.actions.update_robot_status(
+                robot=settings.robot_id,
+                status="OFFLINE",
+            )
+            logger.info("Robot status set to OFFLINE")
+        except Exception as exc:
+            logger.warning("Failed to set OFFLINE status: %s", exc)
+
     logger.info("Terminating child processes...")
     for name, proc in processes.items():
         proc.terminate()
