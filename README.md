@@ -135,39 +135,52 @@ journalctl -u qa-cell-edge-agent -f
 
 ### Physical AI Loop
 
-```
-                    ┌──────────────────────────────────────────┐
-                    │            Palantir Foundry               │
-                    │                                          │
-                    │  vision-readings   ← camera thumbnails   │
-                    │  grip-readings     ← gripper load        │
-                    │  sensor-telemetry  ← temps, conf, load   │
-                    │  OSDK              ← inspection events   │
-                    │  Dashboard         → operator commands    │
-                    │  ModelRegistry     → retrained models     │
-                    └──────┬───────────────────┬───────────────┘
-                           │                   │
-                    push data up         pull commands +
-                                         models down
-                           │                   │
-            ┌──────────────▼───────────────────▼──────────────┐
-            │           Jetson Nano Edge Agent                 │
-            │                                                 │
-            │  Process 1 (sensor_push)                        │
-            │    camera capture                               │
-            │    read shared sensor state ◄─── Manager.dict   │
-            │    push ALL 3 streams @ 1Hz        ▲            │
-            │    enqueue frame ──Queue──►         │            │
-            │                            Process 2 (defect)   │
-            │                              owns serial port   │
-            │                              gripper + temps    │
-            │                              inference + fusion │
-            │                              arm pick-and-place │
-            │                              OSDK events        │
-            │                              writes sensor state│
-            │                                    ▲            │
-            │                     model_upgrade ─┘ (reload)   │
-            └─────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    subgraph Foundry["Palantir Foundry"]
+        VS[vision-readings stream]
+        GS[grip-readings stream]
+        TS[sensor-telemetry stream]
+        OSDK[OSDK Actions]
+        Dashboard[Operator Dashboard]
+        MR[ModelRegistry]
+    end
+
+    subgraph Jetson["Jetson Nano Edge Agent"]
+        subgraph P1["Process 1: sensor_push"]
+            CAM[Camera Capture]
+            PUSH[Push 3 Streams @ 1Hz]
+            Q_OUT[Enqueue Frame]
+        end
+
+        subgraph P2["Process 2: defect_detection"]
+            SERIAL[Serial Port: Arm + Gripper]
+            INF[YOLOv5 Inference]
+            FUS[Sensor Fusion]
+            ARM[Pick-and-Place]
+            EVT[Create InspectionEvent]
+        end
+
+        subgraph P3["Process 3: model_upgrade"]
+            POLL[Poll ModelRegistry]
+            SWAP[Hot-Swap Model]
+        end
+
+        STATE[(Shared Sensor State)]
+    end
+
+    CAM --> PUSH
+    STATE --> PUSH
+    Q_OUT -->|Queue| P2
+    SERIAL --> STATE
+    INF --> FUS --> ARM --> EVT
+    PUSH --> VS
+    PUSH --> GS
+    PUSH --> TS
+    EVT --> OSDK
+    Dashboard -->|Commands| P2
+    MR -->|New Model| POLL --> SWAP -->|Reload Event| INF
+    P2 --> STATE
 ```
 
 1. **Capture** — overhead camera frame (Process 1, 1Hz)
@@ -258,8 +271,10 @@ src/
 │   │   └── model_upgrade.py
 │   └── main.py              # Process orchestrator
 ├── scripts/
-│   ├── register_robot.py    # One-time robot + sensor registration in Foundry
-│   ├── test_connection.py   # 7-point connectivity check + seed data
+│   ├── verify_hardware.py   # Pre-flight serial + camera check
+│   ├── register_robot.py    # One-time robot registration in Foundry
+│   ├── test_connection.py   # 8-point connectivity check + seed data
+│   ├── simulate.py          # Full simulation loop with live camera, no robot hardware
 │   ├── calibrate_arm.py     # Record arm waypoints for bin layout
 │   ├── calibrate_camera.py  # Camera-to-robot calibration (homography / hand-eye)
 │   └── download_model.py    # Fetch YOLOv5n ONNX for local testing
@@ -276,6 +291,7 @@ src/
 | `scripts/test_connection.py` | 8-point Foundry connectivity check. `--seed --count N` generates demo data |
 | `scripts/calibrate_arm.py` | Interactive: move arm to each waypoint, records joint angles to `waypoints.json` |
 | `scripts/calibrate_camera.py` | Camera-to-robot calibration. `--method homography` (flat surface) or `--method handeye` (ArUco) |
+| `scripts/simulate.py` | Full simulation loop: live camera + inference + Foundry push, no robot needed |
 | `scripts/download_model.py` | Downloads `yolov5n.onnx` (~4 MB) for local inference testing |
 
 ## Configuration
