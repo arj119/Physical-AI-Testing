@@ -131,42 +131,72 @@ class Arm:
         self._mc.send_coords(coords, speed, mode=1)  # mode=1 = linear
         self._wait_until_stopped()
 
+    # Heights in mm — adjust for your setup
+    APPROACH_HEIGHT_MM = 100.0  # above the surface (clear of cubes + camera safe)
+    GRIP_HEIGHT_MM = 25.0       # half cube height (~50mm cube / 2)
+    TRANSIT_HEIGHT_MM = 150.0   # safe height for moving between positions (below camera at 500mm)
+
     def pick_and_place(
         self,
         decision: str,
         gripper: Gripper,
         pick_target: Optional[PickTarget] = None,
     ) -> None:
-        """Execute a full pick → sort cycle for the given fusion decision.
+        """Execute a full pick → sort cycle with approach/lift phases.
 
-        Sequence: HOME → PICK (fixed or dynamic) → close gripper → BIN →
-                  release gripper → HOME
+        Sequence:
+          HOME
+          → move above pick position (approach height)
+          → lower to grip height
+          → activate gripper/pump
+          → lift to transit height
+          → move to bin
+          → release
+          → HOME
 
         Parameters
         ----------
         decision : str
-            Fusion decision: "PASS", "FAIL", or "REVIEW".
+            Sorting decision: "PASS", "FAIL", or "REVIEW".
         gripper : Gripper
             Gripper driver instance.
         pick_target : PickTarget, optional
-            If provided and reachable, uses Cartesian coords for the pick
-            position instead of the fixed PICK waypoint.
+            If provided and reachable, uses Cartesian coords for the pick.
         """
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
+
         self.go_to("HOME")
+
         if pick_target and pick_target.reachable:
+            coords = pick_target.coords
             logger.info(
-                "Dynamic pick at (%.1f, %.1f, %.1f) — %.1f mm from base",
-                pick_target.coords[0], pick_target.coords[1],
-                pick_target.coords[2], pick_target.distance_from_base,
+                "Dynamic pick at (%.1f, %.1f) — %.1f mm from base",
+                coords[0], coords[1], pick_target.distance_from_base,
             )
-            self.go_to_coords(pick_target.coords)
+            rx, ry, rz = coords[3], coords[4], coords[5]
+
+            # Approach above the cube
+            approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, rz]
+            self.go_to_coords(approach)
+
+            # Lower to grip height
+            grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, rz]
+            self.go_to_coords(grip_pos, speed=30)
+
+            # Activate gripper/pump
+            gripper.close_gripper()
+
+            # Lift to transit height
+            lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, rz]
+            self.go_to_coords(lift_pos)
         else:
             if pick_target and not pick_target.reachable:
                 logger.warning("Pick target unreachable — using fixed PICK waypoint")
             self.go_to("PICK")
-        gripper.close_gripper()
+            gripper.close_gripper()
+
+        # Move to bin and release
         self.go_to(bin_name)
         gripper.release()
         self.go_to("HOME")

@@ -37,15 +37,18 @@ class Gripper:
         port: str = "/dev/ttyUSB0",
         baud: int = 115200,
         mock: bool = False,
+        use_pump: bool = True,
     ) -> None:
         self._mc = get_connection(port, baud, mock=mock)
         self.mock = self._mc is None
         self._grip_state = "OPEN"
+        self._use_pump = use_pump
 
         if self.mock:
-            logger.info("Gripper running in MOCK mode")
+            logger.info("Gripper running in MOCK mode (pump=%s)", use_pump)
         else:
-            logger.info("Gripper ready (shared connection on %s @ %d)", port, baud)
+            mode = "suction pump" if use_pump else "claw gripper"
+            logger.info("Gripper ready: %s (shared connection on %s @ %d)", mode, port, baud)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -79,22 +82,32 @@ class Gripper:
         )
 
     def open_gripper(self) -> None:
-        """Open the gripper."""
+        """Open the gripper (or turn off pump for suction mode)."""
         self._grip_state = "OPEN"
         if not self.mock:
-            self._mc.set_gripper_value(100, 50)
+            if self._use_pump:
+                self._mc.set_basic_output(2, 1)  # pump OFF
+                self._mc.set_basic_output(5, 0)  # valve OPEN (release)
+                time.sleep(0.3)
+                self._mc.set_basic_output(5, 1)  # valve CLOSE
+            else:
+                self._mc.set_gripper_value(100, 50)
             time.sleep(0.5)
 
     def close_gripper(self) -> None:
-        """Close the gripper."""
+        """Close the gripper (or activate pump for suction mode)."""
         self._grip_state = "CLOSING"
         if not self.mock:
-            self._mc.set_gripper_value(0, 50)
-            time.sleep(1.0)
+            if self._use_pump:
+                self._mc.set_basic_output(2, 0)  # pump ON
+                time.sleep(1.5)  # wait for suction to grip
+            else:
+                self._mc.set_gripper_value(0, 50)
+                time.sleep(1.0)
         self._grip_state = "CLOSED"
 
     def release(self) -> None:
-        """Release (open) the gripper after placing a part."""
+        """Release (open gripper or release suction)."""
         self._grip_state = "RELEASING"
         self.open_gripper()
 
