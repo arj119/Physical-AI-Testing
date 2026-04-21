@@ -22,6 +22,7 @@ from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.processes.sensor_push import run_sensor_push
 from qa_cell_edge_agent.processes.defect_detection import run_defect_detection
 from qa_cell_edge_agent.processes.model_upgrade import run_model_upgrade
+from qa_cell_edge_agent.processes.live_view import run_live_view
 
 logging.basicConfig(
     level=logging.INFO,
@@ -38,6 +39,7 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Mock both hardware and Foundry")
     parser.add_argument("--mock-hardware", action="store_true", help="Mock hardware only")
     parser.add_argument("--mock-foundry", action="store_true", help="Mock Foundry only")
+    parser.add_argument("--live-view", action="store_true", help="Show camera feed with detections")
     args = parser.parse_args()
 
     if args.mock:
@@ -120,6 +122,14 @@ def main() -> None:
         ),
     }
 
+    if args.live_view:
+        processes["live-view"] = Process(
+            target=run_live_view,
+            args=(sensor_state, settings),
+            name="live-view",
+            daemon=True,
+        )
+
     for name, proc in processes.items():
         proc.start()
         logger.info("Started %s (PID %d)", name, proc.pid)
@@ -159,6 +169,13 @@ def main() -> None:
                     proc = Process(
                         target=run_model_upgrade,
                         args=(model_reload_event, settings),
+                        name=name,
+                        daemon=True,
+                    )
+                elif name == "live-view":
+                    proc = Process(
+                        target=run_live_view,
+                        args=(sensor_state, settings),
                         name=name,
                         daemon=True,
                     )
