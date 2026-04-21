@@ -81,8 +81,8 @@ def find_mycobot_port() -> Optional[str]:
             logger.info("Auto-discovered myCobot on %s", device)
             return device
 
-    # Fallback: look for common tty names on Linux
-    for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*"]:
+    # Fallback: look for common tty names on Linux (includes Jetson GPIO UART)
+    for pattern in ["/dev/ttyUSB*", "/dev/ttyACM*", "/dev/ttyTHS*"]:
         matches = sorted(glob.glob(pattern))
         if len(matches) > 1:
             logger.warning(

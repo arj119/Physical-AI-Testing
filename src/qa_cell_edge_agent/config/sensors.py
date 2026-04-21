@@ -28,7 +28,7 @@ class SensorDef:
 
 
 # Phase 1 — Core (derived from inference + gripper readings)
-# Phase 2 — Servo temperatures (pymycobot: mc.get_joints_temperature())
+# Phase 2 — Servo temperatures (pymycobot: mc.get_servo_temps())
 SENSOR_REGISTRY: List[SensorDef] = [
     # ── Phase 1: Core ────────────────────────────────────────────
     SensorDef("vision-confidence:{robot_id}", "cam-{robot_id}",

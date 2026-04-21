@@ -104,14 +104,14 @@ def check_serial():
 
     # Test temperatures
     try:
-        temps = mc.get_joints_temperature()
+        temps = mc.get_servo_temps()
         if temps and len(temps) >= 6:
             temps_str = ", ".join(f"{t:.1f}" for t in temps[:6])
             print(f"  {PASS} Temps:      [{temps_str}] \u00b0C")
         else:
-            print(f"  {WARN} Temps:      get_joints_temperature() returned {temps}")
+            print(f"  {WARN} Temps:      get_servo_temps() returned {temps}")
     except Exception as exc:
-        print(f"  {WARN} Temps:      get_joints_temperature() failed: {exc}")
+        print(f"  {WARN} Temps:      get_servo_temps() failed: {exc}")
 
     return True
 

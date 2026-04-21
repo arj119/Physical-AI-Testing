@@ -27,6 +27,7 @@ from qa_cell_edge_agent.config.foundry import FoundryClients
 from qa_cell_edge_agent.drivers.arm import Arm
 from qa_cell_edge_agent.drivers.gripper import Gripper
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
+from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
 from qa_cell_edge_agent.fusion.engine import FusionEngine
 from qa_cell_edge_agent.models.inference import ModelInference
 
@@ -79,7 +80,9 @@ def run_defect_detection(
         mock=settings.mock_hardware,
     )
     cam_transform = CameraTransform()
+    workspace = WorkspaceMonitor()
     state = RobotState()
+    _reference_captured = False
 
     def _on_exit():
         try:
@@ -132,11 +135,24 @@ def run_defect_detection(
 
             cycle_start = time.monotonic()
 
+            # ── Capture reference on first frame (empty workspace) ─
+            frame = item["frame"]
+            if not _reference_captured:
+                workspace.capture_reference(frame)
+                _reference_captured = True
+                logger.info("Workspace reference captured — waiting for objects")
+                continue
+
+            # ── Check for new object in white zone ────────────────
+            if not workspace.has_new_object(frame):
+                continue
+
             # ── Read gripper ──────────────────────────────────────
             grip_data = gripper.read()
 
-            # ── Run inference ─────────────────────────────────────
-            result = model.infer(item["frame"])
+            # ── Run inference on masked frame (white zone only) ───
+            masked_frame = workspace.mask_frame(frame)
+            result = model.infer(masked_frame)
 
             # ── Skip if nothing detected ─────────────────────────
             no_detection = (
