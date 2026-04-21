@@ -110,11 +110,34 @@ def calibrate_homography(num_points: int = 6) -> dict:
         if event == cv2.EVENT_LBUTTONDOWN:
             clicked.append((x, y))
 
-    cv2.namedWindow("Calibration")
+    cv2.namedWindow("Calibration", cv2.WINDOW_NORMAL)
+    cv2.resizeWindow("Calibration", 960, 720)
     cv2.setMouseCallback("Calibration", _on_click)
 
     for i in range(num_points):
-        input(f"  [{i+1}/{num_points}] Move arm to point, press ENTER...")
+        # Show live preview while waiting for user to position arm
+        print(f"  [{i+1}/{num_points}] Move arm to point, then press ENTER in the terminal...")
+        while True:
+            ret, frame = cap.read()
+            if ret:
+                display = frame.copy()
+                for px, py in pixel_points:
+                    cv2.circle(display, (px, py), 8, (0, 255, 0), -1)
+                cv2.putText(display, f"Point {i+1}/{num_points} - position arm, press ENTER in terminal",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                cv2.imshow("Calibration", display)
+            key = cv2.waitKey(30)
+            if key == 27:  # ESC
+                print("Aborted.")
+                cap.release()
+                cv2.destroyAllWindows()
+                sys.exit(1)
+            # Check if Enter was pressed in terminal (non-blocking)
+            import select
+            if select.select([sys.stdin], [], [], 0)[0]:
+                sys.stdin.readline()
+                break
+
         coords = mc.get_coords()
         if not coords or len(coords) < 3:
             print("    WARNING: Could not read robot coords — skipping")
@@ -129,7 +152,9 @@ def calibrate_homography(num_points: int = 6) -> dict:
             if ret:
                 display = frame.copy()
                 for px, py in pixel_points:
-                    cv2.circle(display, (px, py), 5, (0, 255, 0), -1)
+                    cv2.circle(display, (px, py), 8, (0, 255, 0), -1)
+                cv2.putText(display, "Click the point where the arm tip is",
+                            (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 cv2.imshow("Calibration", display)
             if cv2.waitKey(30) & 0xFF == 27:  # ESC to abort
                 print("Aborted.")
