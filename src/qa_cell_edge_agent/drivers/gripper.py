@@ -103,7 +103,7 @@ class Gripper:
         if self.mock:
             return [round(random.gauss(40.0, 5.0), 1) for _ in range(6)]
         try:
-            temps = self._mc.get_joints_temperature()
+            temps = self._mc.get_servo_temps()
             if temps and len(temps) >= 6:
                 return [float(t) for t in temps[:6]]
             return [0.0] * 6
