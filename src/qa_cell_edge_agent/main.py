@@ -57,7 +57,8 @@ def main() -> None:
     logger.info("  Mock Foundry:   %s", settings.mock_foundry)
     logger.info("  myCobot port:   %s @ %d", settings.mycobot_port, settings.mycobot_baud)
     logger.info("  Camera index:   %d", settings.camera_device_index)
-    logger.info("  Model path:     %s", settings.model_path)
+    abs_model = os.path.abspath(settings.model_path)
+    logger.info("  Model path:     %s", abs_model)
     logger.info("  Capture rate:   %.1f Hz", 1.0 / settings.capture_interval_sec)
     logger.info("=" * 60)
 
@@ -67,23 +68,22 @@ def main() -> None:
             logger.error("CLIENT_ID and CLIENT_SECRET must be set in .env for Foundry mode")
             sys.exit(1)
 
-    if not settings.mock_hardware:
-        import os as _os
-        waypoints_file = _os.path.join(
-            _os.path.dirname(__file__), "drivers", "waypoints.json"
+    if not os.path.isfile(abs_model):
+        logger.warning(
+            "Model not found at %s — inference will use mock mode. "
+            "Run 'python scripts/download_model.py' or set MODEL_PATH in .env",
+            abs_model,
         )
-        if not _os.path.isfile(waypoints_file):
+
+    if not settings.mock_hardware:
+        waypoints_file = os.path.join(
+            os.path.dirname(__file__), "drivers", "waypoints.json"
+        )
+        if not os.path.isfile(waypoints_file):
             logger.warning(
                 "WARNING: waypoints.json not found — using default placeholder positions. "
                 "Run 'python scripts/calibrate_arm.py' for your AI Kit bin layout."
             )
-
-    if not os.path.isfile(settings.model_path):
-        logger.warning(
-            "WARNING: Model file not found at %s — inference will use mock mode. "
-            "Run 'python scripts/download_model.py' to fetch a test model.",
-            settings.model_path,
-        )
 
     # Shared IPC primitives
     sensor_queue: Queue = Queue(maxsize=10)

@@ -10,6 +10,7 @@ a shared ``sensor_state`` dict so Process 1 can push them to Foundry streams.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import queue
@@ -79,6 +80,14 @@ def run_defect_detection(
     )
     cam_transform = CameraTransform()
     state = RobotState()
+
+    def _on_exit():
+        try:
+            arm.safe_position()
+        except Exception:
+            pass
+
+    atexit.register(_on_exit)
 
     logger.info("defect_detection started — robot=%s", settings.robot_id)
 
