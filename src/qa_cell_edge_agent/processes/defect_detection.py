@@ -140,7 +140,7 @@ def run_defect_detection(
 
             # ── Skip if nothing detected ─────────────────────────
             no_detection = (
-                result.confidence < 0.1
+                result.confidence < 0.25
                 or result.bounding_box == [0.0, 0.0, 0.0, 0.0]
             )
             if no_detection:
