@@ -139,9 +139,11 @@ class Arm:
         self._mc.sync_send_coords(coords, speed, mode=1, timeout=self.MOTION_TIMEOUT)
 
     # Heights in mm — adjust for your setup
-    APPROACH_HEIGHT_MM = 100.0  # above the surface (clear of cubes + camera safe)
-    GRIP_HEIGHT_MM = 25.0       # half cube height (~50mm cube / 2)
-    TRANSIT_HEIGHT_MM = 150.0   # safe height for moving between positions (below camera at 500mm)
+    # Z heights in robot base-frame coordinates (mm)
+    # Adjust these to match your setup — check with mc.get_coords() at the surface
+    GRIP_HEIGHT_MM = float(os.environ.get("GRIP_HEIGHT_MM", "88"))       # surface level where gripper grabs
+    APPROACH_HEIGHT_MM = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))  # above cube, clear for approach
+    TRANSIT_HEIGHT_MM = float(os.environ.get("TRANSIT_HEIGHT_MM", "200"))    # safe travel height between positions
 
     def pick_and_place(
         self,
