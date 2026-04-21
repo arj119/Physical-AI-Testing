@@ -201,7 +201,12 @@ def run_defect_detection(
             )
 
             # ── Sort part ─────────────────────────────────────────
-            arm.pick_and_place(fusion_result.decision, gripper, pick_target)
+            arm.pick_and_place(
+                fusion_result.decision,
+                gripper,
+                pick_target,
+                rotation_angle=detection.rotation_angle,
+            )
 
             cycle_time_ms = int((time.monotonic() - cycle_start) * 1000)
 

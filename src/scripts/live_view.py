@@ -103,17 +103,23 @@ def main():
 
             color = DECISION_COLORS.get(decision, (200, 200, 200))
 
-            # Draw bounding box
-            cv2.rectangle(display, (x, y), (x + bw, y + bh), color, 2)
+            # Draw rotated bounding box
+            box_points = cv2.boxPoints(detection.rotated_bbox)
+            box_points = box_points.astype(int)
+            cv2.drawContours(display, [box_points], 0, color, 2)
+
+            # Draw angle indicator line from center
+            rot_cx, rot_cy = int(detection.rotated_bbox[0][0]), int(detection.rotated_bbox[0][1])
+            cv2.circle(display, (rot_cx, rot_cy), 4, color, -1)
 
             # Label
-            label = f"{detection.dominant_color} ({detection.detected_class}) -> {decision}"
+            label = f"{detection.dominant_color} -> {decision} ({detection.rotation_angle:.0f} deg)"
             label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
             cv2.rectangle(display, (x, y - label_size[1] - 10), (x + label_size[0], y), color, -1)
             cv2.putText(display, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             # Info bar
-            cv2.putText(display, f"Block: {detection.dominant_color} conf={detection.confidence:.2f} area={detection.contour_area:.0f}",
+            cv2.putText(display, f"Block: {detection.dominant_color} angle={detection.rotation_angle:.0f} area={detection.contour_area:.0f}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         else:
             cv2.putText(display, "No block detected", (10, 30),
