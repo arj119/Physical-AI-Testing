@@ -93,20 +93,21 @@ def main():
             bbox = detection.bounding_box
             x, y, bw, bh = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
 
-            # Fusion decision
-            fusion_result = fusion.decide(
-                vision_class=detection.detected_class,
-                confidence=detection.confidence,
-                normalized_load=0.3,
-            )
+            # Decision from color
+            _CLASS_TO_DECISION = {
+                "widget_good": "PASS",
+                "widget_defect": "FAIL",
+                "widget_unknown": "REVIEW",
+            }
+            decision = _CLASS_TO_DECISION.get(detection.detected_class, "REVIEW")
 
-            color = DECISION_COLORS.get(fusion_result.decision, (200, 200, 200))
+            color = DECISION_COLORS.get(decision, (200, 200, 200))
 
             # Draw bounding box
             cv2.rectangle(display, (x, y), (x + bw, y + bh), color, 2)
 
             # Label
-            label = f"{detection.dominant_color} ({detection.detected_class}) -> {fusion_result.decision}"
+            label = f"{detection.dominant_color} ({detection.detected_class}) -> {decision}"
             label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
             cv2.rectangle(display, (x, y - label_size[1] - 10), (x + label_size[0], y), color, -1)
             cv2.putText(display, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)

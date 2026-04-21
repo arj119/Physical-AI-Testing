@@ -186,11 +186,18 @@ def run_defect_detection(
                 except (IndexError, TypeError) as exc:
                     logger.warning("Could not compute pick target: %s", exc)
 
-            # ── Sensor fusion ─────────────────────────────────────
-            fusion_result = fusion.decide(
-                vision_class=result.detected_class,
-                confidence=result.confidence,
-                normalized_load=grip_data.normalized_load,
+            # ── Decision from color classification ────────────────
+            _CLASS_TO_DECISION = {
+                "widget_good": "PASS",
+                "widget_defect": "FAIL",
+                "widget_unknown": "REVIEW",
+            }
+            from qa_cell_edge_agent.fusion.engine import FusionResult
+            decision = _CLASS_TO_DECISION.get(result.detected_class, "REVIEW")
+            fusion_result = FusionResult(
+                decision=decision,
+                reason=f"color_{result.dominant_color}",
+                vision_agrees=True,
             )
 
             # ── Sort part ─────────────────────────────────────────
