@@ -90,14 +90,7 @@ def main():
         # Draw workspace zone
         display = workspace.draw_zone(display)
 
-        # Check for new object
-        has_object = workspace.has_new_object(frame) if workspace.is_ready else True
-        zone_status = "OBJECT" if has_object else "empty"
-        zone_color = (0, 255, 0) if has_object else (128, 128, 128)
-        cv2.putText(display, f"Zone: {zone_status}", (10, 90),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, zone_color, 2)
-
-        if model and not model.mock and has_object:
+        if model and not model.mock:
             masked = workspace.mask_frame(frame) if workspace.is_configured else frame
             t0 = time.monotonic()
             result = model.infer(masked)
