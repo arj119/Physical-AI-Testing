@@ -96,6 +96,11 @@ def run_defect_detection(
 
     atexit.register(_on_exit)
 
+    # Move to HOME on startup
+    logger.info("Moving to HOME position...")
+    arm.go_to("HOME")
+    gripper.open_gripper()
+
     logger.info("defect_detection started — robot=%s", settings.robot_id)
 
     last_heartbeat = 0.0
