@@ -138,6 +138,15 @@ def run_defect_detection(
             # ── Run inference ─────────────────────────────────────
             result = model.infer(item["frame"])
 
+            # ── Skip if nothing detected ─────────────────────────
+            no_detection = (
+                result.confidence < 0.1
+                or result.bounding_box == [0.0, 0.0, 0.0, 0.0]
+            )
+            if no_detection:
+                logger.debug("No object detected (conf=%.2f) — skipping", result.confidence)
+                continue
+
             # ── Compute dynamic pick target from bounding box ─────
             pick_target = None
             if cam_transform.is_calibrated and result.bounding_box:
