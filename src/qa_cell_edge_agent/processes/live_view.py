@@ -35,6 +35,11 @@ def run_live_view(
 ) -> None:
     """Entry point for the live view process."""
 
+    import os
+    # Ensure display is available for GUI in subprocess
+    if "DISPLAY" not in os.environ:
+        os.environ["DISPLAY"] = ":0"
+
     import cv2
     from qa_cell_edge_agent.config.settings import Settings
     from qa_cell_edge_agent.drivers.block_detector import BlockDetector
