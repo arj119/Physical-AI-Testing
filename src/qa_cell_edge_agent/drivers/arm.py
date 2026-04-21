@@ -136,7 +136,7 @@ class Arm:
             time.sleep(0.3)
             return
         logger.debug("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
-        self._mc.sync_send_coords(coords, speed, mode=1, timeout=self.MOTION_TIMEOUT)
+        self._mc.sync_send_coords(coords, speed, mode=0, timeout=self.MOTION_TIMEOUT)
 
     # Heights in mm — adjust for your setup
     # Z heights in robot base-frame coordinates (mm)
