@@ -1,0 +1,19 @@
+[Unit]
+Description=QA Cell Edge Agent
+After=network-online.target
+Requires=network-online.target
+
+[Service]
+Type=simple
+User=jetson
+WorkingDirectory=/opt/qa-cell-edge-agent
+EnvironmentFile=/opt/qa-cell-edge-agent/.env
+ExecStart=/opt/qa-cell-edge-agent/venv/bin/python -m qa_cell_edge_agent.main
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=qa-cell-edge-agent
+
+[Install]
+WantedBy=multi-user.target

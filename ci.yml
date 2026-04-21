@@ -1,0 +1,85 @@
+# DO NOT MODIFY OR DELETE THIS FILE.
+#
+# ANY CHANGES MAY RESULT IN SERIOUS DAMAGE
+# TO THE TECHNICAL INFRASTRUCTURE AND LOSS OF DATA!
+#
+# ACCESS TO OR USE OF PALANTIR FOUNDRY IS SUBJECT
+# TO PALANTIR’S TECHNICAL SPECIFICATIONS AVAILABLE
+# IN THE DOCUMENTATION. THIS WARNING CONSTITUTES AN
+# ADDITION TO THOSE TECHNICAL SPECIFICATIONS AND
+# NON-COMPLIANCE MAY CONSTITUTE A VIOLATION OF
+# THE FOUNDRY LICENSE AGREEMENT.
+
+java-version: java_17
+
+env:
+  transformsGradleDistributionUrl:
+    uri-role: gradle-distribution-8-12-1
+  ORG_GRADLE_PROJECT_artifactsUri:
+    uri-role: foundry-artifacts-api
+  ORG_GRADLE_PROJECT_condaInstallerUri:
+    uri-role: conda-installer
+  ORG_GRADLE_PROJECT_condaInstallerUriPy2:
+    uri-role: conda-installer8-py2
+  ORG_GRADLE_PROJECT_condaInstallerUriPy3:
+    uri-role: conda-installer8-py3
+  ORG_GRADLE_PROJECT_condaInstallerUriPy3Mamba:
+    uri-role: conda-installer8-py3mamba
+  ORG_GRADLE_PROJECT_mambaInstaller:
+    uri-role: mamba-installer3
+  ORG_GRADLE_PROJECT_mambaInstaller3:
+    uri-role: mamba-installer3
+  ORG_GRADLE_PROJECT_mambaInstaller8:
+    uri-role: mamba-installer8
+  ORG_GRADLE_PROJECT_jemmaLogReceiverUri:
+    uri-role: log-receiver-api-jemma-alias
+  ORG_GRADLE_PROJECT_mavenProxyRepoUri:
+    uri-role: maven-repository-proxy-authz
+  ORG_GRADLE_PROJECT_transformsCondaRepositoryProxyApiUri:
+    uri-role: conda-repository-proxy-authz-api
+  ORG_GRADLE_PROJECT_transformsCondaRepositoryProxyPublicRepoUri:
+    uri-role: conda-repository-proxy-authz-public
+
+required-job-token-capabilities:
+  - python-library
+
+jobs:
+  library-publish:
+    timeout: 20 minutes
+    steps:
+    - |
+      set -euo pipefail
+
+      unset SUDO_UID SUDO_GID SUDO_USER
+
+      [[ -n "${JAVA_HOME-}" && -d "$JAVA_HOME" ]] || {
+          echo "JAVA_HOME was not set or did not point to a valid directory."
+          exit 1
+      }
+      
+      maxJvmHeapMB=2048
+      if [ -z ${KUBERNETES_PORT+x} ]; then 
+        maxJvmHeapMB=1024
+      fi
+      
+      export GRADLE_OPTS="-Dorg.gradle.jvmargs='-Xmx${maxJvmHeapMB}m' -Djavax.net.ssl.trustStore=${STEMMA_DEFAULT_TRUST_STORE_PATH} -Dfile.encoding=UTF8 -Dgradle.wrapperUser='' -Dgradle.wrapperPassword=${JOB_TOKEN}"
+      export JAVA_OPTS="-Xmx${maxJvmHeapMB}m -Djavax.net.ssl.trustStore=${STEMMA_DEFAULT_TRUST_STORE_PATH} -Djavax.net.ssl.trustStorePassword=${STEMMA_DEFAULT_TRUST_STORE_PASSWORD}"
+      export ORG_GRADLE_PROJECT_transformsTrustStore="${STEMMA_DEFAULT_TRUST_STORE_PATH}"
+      export ORG_GRADLE_PROJECT_bearerToken="${JOB_TOKEN}"
+      export ORG_GRADLE_PROJECT_transformsRepoRid="${REPOSITORY_RID}"
+      export ORG_GRADLE_PROJECT_mavenProxyRepoUri="${ORG_GRADLE_PROJECT_artifactsUri}/repositories/${REPOSITORY_RID}/contents/migration/maven"
+      export ORG_GRADLE_PROJECT_applyCondaLocksPatch="true"
+
+      if [ ! -z "${JEMMA_TAG:-}" ]; 
+      then
+        export ORG_GRADLE_PROJECT_jemmaTag="${JEMMA_TAG}"
+      fi
+      
+      maestroPackageBuildingVersion=1
+      maestroPackageBuildingVersionJemmaVersion=${JEMMA_MAESTRO_PACKAGE_BUILDING_VERSION:-0}
+      if [ "$maestroPackageBuildingVersion" -eq "$maestroPackageBuildingVersionJemmaVersion" ];
+      then
+        export ORG_GRADLE_PROJECT_enableMaestroPackageBuildingVersion="true";
+      fi
+      
+      ./gradleww --no-daemon --build-cache --stacktrace check patch publish
