@@ -106,8 +106,10 @@ class Arm:
 
     # ── public API ────────────────────────────────────────────────────
 
+    MOTION_TIMEOUT = 15  # seconds to wait for arm to reach target
+
     def go_to(self, waypoint_name: str) -> None:
-        """Move to a named waypoint."""
+        """Move to a named waypoint. Blocks until the arm arrives."""
         wp = self.waypoints.get(waypoint_name)
         if wp is None:
             logger.error("Unknown waypoint: %s", waypoint_name)
@@ -116,11 +118,11 @@ class Arm:
             logger.info("[MOCK] Arm → %s %s", wp.name, wp.angles)
             time.sleep(0.3)
             return
-        self._mc.send_angles(wp.angles, wp.speed)
-        self._wait_until_stopped()
+        logger.debug("Arm → %s (speed=%d)", wp.name, wp.speed)
+        self._mc.sync_send_angles(wp.angles, wp.speed, timeout=self.MOTION_TIMEOUT)
 
     def go_to_coords(self, coords: List[float], speed: int = 50) -> None:
-        """Move to a Cartesian position using linear interpolation.
+        """Move to a Cartesian position. Blocks until the arm arrives.
 
         Parameters
         ----------
@@ -133,8 +135,8 @@ class Arm:
             logger.info("[MOCK] Arm → coords %s", coords)
             time.sleep(0.3)
             return
-        self._mc.send_coords(coords, speed, mode=1)  # mode=1 = linear
-        self._wait_until_stopped()
+        logger.debug("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
+        self._mc.sync_send_coords(coords, speed, mode=1, timeout=self.MOTION_TIMEOUT)
 
     # Heights in mm — adjust for your setup
     APPROACH_HEIGHT_MM = 100.0  # above the surface (clear of cubes + camera safe)
