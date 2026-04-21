@@ -53,7 +53,12 @@ def main():
     h, w = frame.shape[:2]
     print(f"Camera: index {settings.camera_device_index} ({w}x{h})")
 
-    # Load model
+    # Load model + workspace monitor
+    from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
+    workspace = WorkspaceMonitor()
+    workspace.capture_reference(frame)
+    print(f"Workspace: white zone ROI = {workspace.roi_bbox}")
+
     model = None
     fusion = None
     if not args.no_inference:
@@ -82,9 +87,20 @@ def main():
         display = frame.copy()
         frame_count += 1
 
-        if model and not model.mock:
+        # Draw workspace zone
+        display = workspace.draw_zone(display)
+
+        # Check for new object
+        has_object = workspace.has_new_object(frame) if workspace.is_ready else True
+        zone_status = "OBJECT" if has_object else "empty"
+        zone_color = (0, 255, 0) if has_object else (128, 128, 128)
+        cv2.putText(display, f"Zone: {zone_status}", (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, zone_color, 2)
+
+        if model and not model.mock and has_object:
+            masked = workspace.mask_frame(frame) if workspace.is_configured else frame
             t0 = time.monotonic()
-            result = model.infer(frame)
+            result = model.infer(masked)
             inf_ms = int((time.monotonic() - t0) * 1000)
 
             bbox = result.bounding_box
