@@ -86,6 +86,7 @@ def run_defect_detection(
     state = RobotState()
     _stable_since: Optional[float] = None
     _stable_bbox: Optional[list] = None
+    _arm_busy: bool = False
     SETTLE_SECS = 2.0
 
     def _on_exit():
@@ -205,13 +206,26 @@ def run_defect_detection(
                 vision_agrees=True,
             )
 
-            # ── Sort part ─────────────────────────────────────────
+            # ── Sort part (blocks until arm returns HOME) ─────────
+            _arm_busy = True
             arm.pick_and_place(
                 fusion_result.decision,
                 gripper,
                 pick_target,
                 rotation_angle=detection.rotation_angle,
             )
+            _arm_busy = False
+
+            # Drain stale frames that accumulated while arm was moving
+            drained = 0
+            while True:
+                try:
+                    sensor_queue.get_nowait()
+                    drained += 1
+                except queue.Empty:
+                    break
+            if drained:
+                logger.debug("Drained %d stale frames after pick-and-place", drained)
 
             cycle_time_ms = int((time.monotonic() - cycle_start) * 1000)
 
