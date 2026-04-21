@@ -82,6 +82,9 @@ def run_defect_detection(
     cam_transform = CameraTransform()
     workspace = WorkspaceMonitor()
     state = RobotState()
+    _stable_since: Optional[float] = None
+    _stable_bbox: Optional[list] = None
+    SETTLE_SECS = 2.0
 
     def _on_exit():
         try:
@@ -151,8 +154,24 @@ def run_defect_detection(
                 or result.bounding_box == [0.0, 0.0, 0.0, 0.0]
             )
             if no_detection:
-                logger.debug("No object detected (conf=%.2f) — skipping", result.confidence)
+                _stable_since = None
+                _stable_bbox = None
                 continue
+
+            # ── Wait for object to settle ────────────────────────
+            bbox = result.bounding_box
+            if _stable_bbox is None or _bbox_moved(_stable_bbox, bbox):
+                _stable_bbox = bbox
+                _stable_since = time.monotonic()
+                logger.debug("Object moving (conf=%.2f) — waiting to settle", result.confidence)
+                continue
+
+            if time.monotonic() - _stable_since < SETTLE_SECS:
+                continue
+
+            logger.info("Object settled for %.1fs — acting (conf=%.2f)", SETTLE_SECS, result.confidence)
+            _stable_since = None
+            _stable_bbox = None
 
             # ── Compute dynamic pick target from bounding box ─────
             pick_target = None
@@ -324,6 +343,18 @@ def _send_heartbeat(
         )
     except Exception as exc:
         logger.error("Heartbeat failed: %s", exc)
+
+
+def _bbox_moved(prev: list, curr: list, threshold: float = 20.0) -> bool:
+    """Check if bounding box center moved more than threshold pixels."""
+    if len(prev) != 4 or len(curr) != 4:
+        return True
+    prev_cx = prev[0] + prev[2] / 2
+    prev_cy = prev[1] + prev[3] / 2
+    curr_cx = curr[0] + curr[2] / 2
+    curr_cy = curr[1] + curr[3] / 2
+    dist = ((prev_cx - curr_cx) ** 2 + (prev_cy - curr_cy) ** 2) ** 0.5
+    return dist > threshold
 
 
 def _upload_frame(clients: FoundryClients, item: dict):
