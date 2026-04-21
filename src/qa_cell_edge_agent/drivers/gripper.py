@@ -37,7 +37,7 @@ class Gripper:
         port: str = "/dev/ttyUSB0",
         baud: int = 115200,
         mock: bool = False,
-        use_pump: bool = True,
+        use_pump: bool = False,
     ) -> None:
         self._mc = get_connection(port, baud, mock=mock)
         self.mock = self._mc is None

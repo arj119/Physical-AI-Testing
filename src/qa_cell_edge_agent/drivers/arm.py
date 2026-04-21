@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "waypoints.json")
 
+# Camera rotation offset: degrees to add to the detected angle to align
+# with J6 zero. Measure once: place cube aligned with gripper at J6=0,
+# note the angle the camera reports, set this to negative of that.
+CAMERA_ROTATION_OFFSET = float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+
 
 @dataclass
 class Waypoint:
@@ -141,17 +146,20 @@ class Arm:
         decision: str,
         gripper: Gripper,
         pick_target: Optional[PickTarget] = None,
+        rotation_angle: float = 0.0,
     ) -> None:
-        """Execute a full pick → sort cycle with approach/lift phases.
+        """Execute a full pick → sort cycle with approach/lift/rotation phases.
 
         Sequence:
           HOME
+          → open gripper
           → move above pick position (approach height)
-          → lower to grip height
-          → activate gripper/pump
+          → rotate J6 to align with cube
+          → lower to grip height (slow)
+          → close gripper
           → lift to transit height
           → move to bin
-          → release
+          → open gripper
           → HOME
 
         Parameters
@@ -162,33 +170,40 @@ class Arm:
             Gripper driver instance.
         pick_target : PickTarget, optional
             If provided and reachable, uses Cartesian coords for the pick.
+        rotation_angle : float
+            Detected cube rotation in degrees (from camera). Applied to J6
+            with CAMERA_ROTATION_OFFSET correction.
         """
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
 
         self.go_to("HOME")
+        gripper.open_gripper()
+
+        # Compute gripper rotation: camera angle + offset
+        grip_rz = rotation_angle + CAMERA_ROTATION_OFFSET
 
         if pick_target and pick_target.reachable:
             coords = pick_target.coords
             logger.info(
-                "Dynamic pick at (%.1f, %.1f) — %.1f mm from base",
-                coords[0], coords[1], pick_target.distance_from_base,
+                "Dynamic pick at (%.1f, %.1f) rz=%.1f° — %.1f mm from base",
+                coords[0], coords[1], grip_rz, pick_target.distance_from_base,
             )
-            rx, ry, rz = coords[3], coords[4], coords[5]
+            rx, ry = coords[3], coords[4]
 
-            # Approach above the cube
-            approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, rz]
+            # Approach above the cube (with rotation already set)
+            approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, grip_rz]
             self.go_to_coords(approach)
 
-            # Lower to grip height
-            grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, rz]
+            # Lower to grip height (slow for precision)
+            grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, grip_rz]
             self.go_to_coords(grip_pos, speed=30)
 
-            # Activate gripper/pump
+            # Close gripper
             gripper.close_gripper()
 
             # Lift to transit height
-            lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, rz]
+            lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
             self.go_to_coords(lift_pos)
         else:
             if pick_target and not pick_target.reachable:

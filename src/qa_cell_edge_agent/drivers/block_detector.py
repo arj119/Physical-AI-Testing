@@ -34,6 +34,8 @@ class BlockDetection:
     bounding_box: List[float]    # [x, y, w, h] in pixels
     dominant_color: str          # green, red, blue, yellow, etc.
     contour_area: float          # area in pixels
+    rotation_angle: float        # degrees from minAreaRect, normalized to [-45, 45]
+    rotated_bbox: tuple          # ((cx, cy), (w, h), angle) from minAreaRect
 
 
 # HSV ranges for color classification
@@ -126,6 +128,16 @@ class BlockDetector:
         best_contour, best_area = max(valid, key=lambda x: x[1])
         x, y, w, h = cv2.boundingRect(best_contour)
 
+        # Rotated bounding rectangle for orientation
+        rot_rect = cv2.minAreaRect(best_contour)  # ((cx,cy), (w,h), angle)
+        raw_angle = rot_rect[2]
+        # Normalize to [-45, 45] for square objects (90° symmetry)
+        angle = raw_angle
+        if angle < -45:
+            angle += 90
+        elif angle > 45:
+            angle -= 90
+
         # Classify by dominant color in the bounding box
         roi_hsv = hsv[y:y+h, x:x+w]
         roi_mask = color_mask[y:y+h, x:x+w]
@@ -137,6 +149,8 @@ class BlockDetector:
             bounding_box=[float(x), float(y), float(w), float(h)],
             dominant_color=color_name,
             contour_area=float(best_area),
+            rotation_angle=round(angle, 1),
+            rotated_bbox=rot_rect,
         )
 
     def _classify_color(
