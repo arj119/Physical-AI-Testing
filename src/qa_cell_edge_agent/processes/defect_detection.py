@@ -25,6 +25,7 @@ from foundry_sdk_runtime.types.null_types import Empty
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
 from qa_cell_edge_agent.drivers.arm import Arm
+from qa_cell_edge_agent.drivers.block_detector import BlockDetector
 from qa_cell_edge_agent.drivers.gripper import Gripper
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
 from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
@@ -81,6 +82,7 @@ def run_defect_detection(
     )
     cam_transform = CameraTransform()
     workspace = WorkspaceMonitor()
+    block_detector = BlockDetector()
     state = RobotState()
     _stable_since: Optional[float] = None
     _stable_bbox: Optional[list] = None
@@ -139,39 +141,39 @@ def run_defect_detection(
 
             frame = item["frame"]
 
-            # ── Mask frame to pick zone (ignore bins, arm, plate) ─
-            inference_frame = workspace.mask_frame(frame) if workspace.is_configured else frame
+            # ── Detect colored block in pick zone ─────────────────
+            zone_mask = workspace._zone_mask if workspace.is_configured else None
+            detection = block_detector.detect(frame, zone_mask=zone_mask)
 
-            # ── Read gripper ──────────────────────────────────────
-            grip_data = gripper.read()
-
-            # ── Run inference on zone-masked frame ────────────────
-            result = model.infer(inference_frame)
-
-            # ── Skip if nothing detected ─────────────────────────
-            no_detection = (
-                result.confidence < 0.25
-                or result.bounding_box == [0.0, 0.0, 0.0, 0.0]
-            )
-            if no_detection:
+            if detection is None:
                 _stable_since = None
                 _stable_bbox = None
                 continue
 
-            # ── Wait for object to settle ────────────────────────
-            bbox = result.bounding_box
+            # ── Wait for block to settle ─────────────────────────
+            bbox = detection.bounding_box
             if _stable_bbox is None or _bbox_moved(_stable_bbox, bbox):
                 _stable_bbox = bbox
                 _stable_since = time.monotonic()
-                logger.debug("Object moving (conf=%.2f) — waiting to settle", result.confidence)
+                logger.debug("Block moving (%s) — waiting to settle", detection.dominant_color)
                 continue
 
             if time.monotonic() - _stable_since < SETTLE_SECS:
                 continue
 
-            logger.info("Object settled for %.1fs — acting (conf=%.2f)", SETTLE_SECS, result.confidence)
+            logger.info(
+                "Block settled: %s (%s, conf=%.2f, area=%.0f) — acting",
+                detection.detected_class, detection.dominant_color,
+                detection.confidence, detection.contour_area,
+            )
             _stable_since = None
             _stable_bbox = None
+
+            # ── Read gripper ──────────────────────────────────────
+            grip_data = gripper.read()
+
+            # ── Use block detection as the inference result ───────
+            result = detection
 
             # ── Compute dynamic pick target from bounding box ─────
             pick_target = None

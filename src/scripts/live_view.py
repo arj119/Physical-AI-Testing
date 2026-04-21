@@ -53,23 +53,18 @@ def main():
     h, w = frame.shape[:2]
     print(f"Camera: index {settings.camera_device_index} ({w}x{h})")
 
-    # Load model + workspace monitor
+    # Load workspace + block detector
     from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
+    from qa_cell_edge_agent.drivers.block_detector import BlockDetector
     workspace = WorkspaceMonitor()
-    workspace.capture_reference(frame)
-    print(f"Workspace: white zone ROI = {workspace.roi_bbox}")
+    block_detector = BlockDetector()
+    print(f"Workspace: zone configured = {workspace.is_configured}")
 
-    model = None
-    fusion = None
-    if not args.no_inference:
-        model = ModelInference(model_path=settings.model_path, mock=False)
-        fusion = FusionEngine(
-            confidence_threshold=settings.confidence_threshold,
-            grip_tolerance=settings.grip_tolerance,
-        )
-        print(f"Model: {settings.model_path} (backend={model._backend}, mock={model.mock})")
-    else:
-        print("Model: disabled (--no-inference)")
+    fusion = FusionEngine(
+        confidence_threshold=settings.confidence_threshold,
+        grip_tolerance=settings.grip_tolerance,
+    )
+    print("Detection: color-based block detector (green=PASS, red=FAIL, other=REVIEW)")
 
     cv2.namedWindow("Live View", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Live View", 960, 720)
@@ -90,43 +85,38 @@ def main():
         # Draw workspace zone
         display = workspace.draw_zone(display)
 
-        if model and not model.mock:
-            masked = workspace.mask_frame(frame) if workspace.is_configured else frame
-            t0 = time.monotonic()
-            result = model.infer(masked)
-            inf_ms = int((time.monotonic() - t0) * 1000)
+        # Detect colored blocks
+        zone_mask = workspace._zone_mask if workspace.is_configured else None
+        detection = block_detector.detect(frame, zone_mask=zone_mask)
 
-            bbox = result.bounding_box
-            has_detection = (
-                result.confidence >= 0.25
-                and bbox != [0.0, 0.0, 0.0, 0.0]
+        if detection is not None:
+            bbox = detection.bounding_box
+            x, y, bw, bh = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+
+            # Fusion decision
+            fusion_result = fusion.decide(
+                vision_class=detection.detected_class,
+                confidence=detection.confidence,
+                normalized_load=0.3,
             )
 
-            if has_detection:
-                x, y, bw, bh = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+            color = DECISION_COLORS.get(fusion_result.decision, (200, 200, 200))
 
-                # Fusion decision (using fixed grip load since no hardware)
-                fusion_result = fusion.decide(
-                    vision_class=result.detected_class,
-                    confidence=result.confidence,
-                    normalized_load=0.3,
-                )
+            # Draw bounding box
+            cv2.rectangle(display, (x, y), (x + bw, y + bh), color, 2)
 
-                color = DECISION_COLORS.get(fusion_result.decision, (200, 200, 200))
-
-                # Draw bounding box
-                cv2.rectangle(display, (x, y), (x + bw, y + bh), color, 2)
-
-                # Label
-                label = f"{result.detected_class} {result.confidence:.2f} -> {fusion_result.decision}"
-                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
-                cv2.rectangle(display, (x, y - label_size[1] - 10), (x + label_size[0], y), color, -1)
-                cv2.putText(display, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            # Label
+            label = f"{detection.dominant_color} ({detection.detected_class}) -> {fusion_result.decision}"
+            label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+            cv2.rectangle(display, (x, y - label_size[1] - 10), (x + label_size[0], y), color, -1)
+            cv2.putText(display, label, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
 
             # Info bar
-            status = f"{result.detected_class} conf={result.confidence:.2f}" if has_detection else "No detection"
-            cv2.putText(display, f"Inference: {inf_ms}ms | {status}",
+            cv2.putText(display, f"Block: {detection.dominant_color} conf={detection.confidence:.2f} area={detection.contour_area:.0f}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        else:
+            cv2.putText(display, "No block detected", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
 
         # FPS
         elapsed = time.monotonic() - fps_start
