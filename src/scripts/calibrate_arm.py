@@ -22,6 +22,28 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 WAYPOINT_NAMES = ["HOME", "PICK", "BIN_PASS", "BIN_FAIL", "BIN_REVIEW"]
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
 
+JOINT_LIMITS = [
+    (-168, 168),   # J1
+    (-140, 140),   # J2
+    (-150, 150),   # J3
+    (-150, 150),   # J4
+    (-155, 160),   # J5
+    (-180, 180),   # J6
+]
+LIMIT_MARGIN = 5  # degrees — warn if within this margin of a limit
+
+
+def _validate_angles(name, angles):
+    """Check angles against joint limits. Returns list of warnings."""
+    warnings = []
+    for i, angle in enumerate(angles):
+        lo, hi = JOINT_LIMITS[i]
+        if angle < lo or angle > hi:
+            warnings.append(f"    ERROR: J{i+1}={angle:.1f} is OUTSIDE limit [{lo}, {hi}]")
+        elif abs(angle - lo) < LIMIT_MARGIN or abs(angle - hi) < LIMIT_MARGIN:
+            warnings.append(f"    WARNING: J{i+1}={angle:.1f} is within {LIMIT_MARGIN} deg of limit [{lo}, {hi}]")
+    return warnings
+
 
 def main():
     load_dotenv()
@@ -69,20 +91,66 @@ def main():
     waypoints = {}
     try:
         for name in WAYPOINT_NAMES:
-            input(f"  Move arm to {name} position, then press ENTER...")
-            angles = mc.get_angles()
-            coords = mc.get_coords()
-
-            if not angles or len(angles) != 6:
-                print(f"  WARNING: get_angles() returned {angles} — retrying...")
-                time.sleep(0.5)
+            while True:
+                input(f"  Move arm to {name} position, then press ENTER...")
                 angles = mc.get_angles()
+                coords = mc.get_coords()
 
-            waypoints[name] = {
-                "angles": angles if angles else [0.0] * 6,
-                "coords": coords if coords else [0.0] * 6,
-            }
-            print(f"    Recorded {name}: angles={angles}, coords={coords}\n")
+                if not angles or len(angles) != 6:
+                    print(f"  WARNING: get_angles() returned {angles} — retrying...")
+                    time.sleep(0.5)
+                    angles = mc.get_angles()
+
+                if not angles or len(angles) != 6:
+                    print(f"  ERROR: Cannot read angles. Check connection.")
+                    continue
+
+                # Validate joint limits
+                warnings = _validate_angles(name, angles)
+                angles_str = ", ".join(f"{a:.1f}" for a in angles)
+                print(f"    {name}: [{angles_str}]")
+
+                if warnings:
+                    for w in warnings:
+                        print(w)
+                    redo = input("    Adjust arm and retry? [Y/n] ").strip().lower()
+                    if redo != "n":
+                        continue
+                    print("    Keeping position despite warnings.")
+
+                # Reachability test — send angles and check
+                print("    Testing reachability...")
+                mc.send_angles(angles, 30)
+                for _ in range(50):
+                    time.sleep(0.1)
+                    try:
+                        if mc.is_moving() == 0:
+                            break
+                    except Exception:
+                        pass
+                time.sleep(0.5)
+                actual = mc.get_angles()
+                if actual and len(actual) == 6:
+                    max_delta = max(abs(actual[i] - angles[i]) for i in range(6))
+                    if max_delta > 5:
+                        print(f"    WARNING: Arm missed target by {max_delta:.1f} deg")
+                        worst = max(range(6), key=lambda i: abs(actual[i] - angles[i]))
+                        print(f"    Worst: J{worst+1} target={angles[worst]:.1f} actual={actual[worst]:.1f}")
+                        redo = input("    Adjust arm and retry? [Y/n] ").strip().lower()
+                        if redo != "n":
+                            mc.release_all_servos()
+                            print("    Servos released — reposition and try again.")
+                            continue
+                    else:
+                        print(f"    Reachable (max delta {max_delta:.1f} deg)")
+
+                mc.release_all_servos()
+                waypoints[name] = {
+                    "angles": angles,
+                    "coords": coords if coords else [0.0] * 6,
+                }
+                print()
+                break
 
     except KeyboardInterrupt:
         print(f"\n\n  Calibration aborted. No file saved.")
