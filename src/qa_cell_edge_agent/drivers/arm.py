@@ -195,18 +195,28 @@ class Arm:
             )
             rx, ry = coords[3], coords[4]
 
-            # Approach above the cube (with rotation already set)
+            # 1. Lift to transit height above HOME (clear of everything)
+            home_coords = self._mc.get_coords() if not self.mock else [0, 0, 0, 0, 0, 0]
+            if home_coords and len(home_coords) >= 3:
+                lift_from_home = [home_coords[0], home_coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
+                self.go_to_coords(lift_from_home)
+
+            # 2. Move horizontally at transit height to above the target
+            above_target = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
+            self.go_to_coords(above_target)
+
+            # 3. Lower to approach height
             approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(approach)
+            self.go_to_coords(approach, speed=40)
 
-            # Lower to grip height (slow for precision)
+            # 4. Lower to grip height (slow for precision)
             grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(grip_pos, speed=30)
+            self.go_to_coords(grip_pos, speed=20)
 
-            # Close gripper
+            # 5. Close gripper
             gripper.close_gripper()
 
-            # Lift to transit height
+            # 6. Lift to transit height
             lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
             self.go_to_coords(lift_pos)
         else:

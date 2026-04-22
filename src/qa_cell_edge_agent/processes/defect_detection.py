@@ -208,12 +208,21 @@ def run_defect_detection(
 
             # ── Sort part (blocks until arm returns HOME) ─────────
             _arm_busy = True
-            arm.pick_and_place(
-                fusion_result.decision,
-                gripper,
-                pick_target,
-                rotation_angle=detection.rotation_angle,
-            )
+            no_pick = sensor_state.get("no_pick", False)
+            if no_pick:
+                # Skip physical pick — just move to bin and back
+                from qa_cell_edge_agent.drivers.arm import DECISION_TO_BIN
+                bin_name = DECISION_TO_BIN.get(fusion_result.decision, "BIN_REVIEW")
+                logger.info("No-pick mode: moving to %s (skipping pick)", bin_name)
+                arm.go_to(bin_name)
+                arm.go_to("HOME")
+            else:
+                arm.pick_and_place(
+                    fusion_result.decision,
+                    gripper,
+                    pick_target,
+                    rotation_angle=detection.rotation_angle,
+                )
             _arm_busy = False
 
             # Drain stale frames that accumulated while arm was moving
