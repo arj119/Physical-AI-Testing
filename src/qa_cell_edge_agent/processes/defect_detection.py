@@ -156,6 +156,18 @@ def run_defect_detection(
                 _stable_bbox = None
                 continue
 
+            # Verify detection center is inside workspace zone
+            if workspace.is_configured and workspace.roi_bbox:
+                bbox = detection.bounding_box
+                cx = bbox[0] + bbox[2] / 2
+                cy = bbox[1] + bbox[3] / 2
+                x_min, y_min, x_max, y_max = workspace.roi_bbox
+                if not (x_min <= cx <= x_max and y_min <= cy <= y_max):
+                    logger.debug("Detection outside zone (%.0f, %.0f) — skipping", cx, cy)
+                    _stable_since = None
+                    _stable_bbox = None
+                    continue
+
             # ── Wait for block to settle ─────────────────────────
             bbox = detection.bounding_box
             if _stable_bbox is None or _bbox_moved(_stable_bbox, bbox):

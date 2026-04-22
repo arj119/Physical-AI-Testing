@@ -118,25 +118,24 @@ class Arm:
             logger.info("[MOCK] Arm → %s %s", wp.name, wp.angles)
             time.sleep(0.3)
             return
-        logger.debug("Arm → %s (speed=%d)", wp.name, wp.speed)
-        self._mc.sync_send_angles(wp.angles, wp.speed, timeout=self.MOTION_TIMEOUT)
+        try:
+            logger.info("Arm → %s angles=%s speed=%d", wp.name, wp.angles, wp.speed)
+            self._mc.sync_send_angles(wp.angles, wp.speed, timeout=self.MOTION_TIMEOUT)
+        except Exception as exc:
+            logger.error("Arm go_to(%s) failed: %s", wp.name, exc)
 
     def go_to_coords(self, coords: List[float], speed: int = 50) -> None:
-        """Move to a Cartesian position. Blocks until the arm arrives.
-
-        Parameters
-        ----------
-        coords : list
-            ``[x, y, z, rx, ry, rz]`` in mm and degrees (base frame).
-        speed : int
-            Movement speed 1-100.
-        """
+        """Move to a Cartesian position. Blocks until the arm arrives."""
         if self.mock:
             logger.info("[MOCK] Arm → coords %s", coords)
             time.sleep(0.3)
             return
-        logger.debug("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
-        self._mc.sync_send_coords(coords, speed, mode=0, timeout=self.MOTION_TIMEOUT)
+        try:
+            logger.info("Arm → coords [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] speed=%d",
+                        *coords, speed)
+            self._mc.sync_send_coords(coords, speed, mode=0, timeout=self.MOTION_TIMEOUT)
+        except Exception as exc:
+            logger.error("Arm go_to_coords failed: %s", exc)
 
     # Heights in mm — adjust for your setup
     # Z heights in robot base-frame coordinates (mm)
