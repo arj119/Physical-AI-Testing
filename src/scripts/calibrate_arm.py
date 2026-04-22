@@ -33,15 +33,44 @@ JOINT_LIMITS = [
 LIMIT_MARGIN = 5  # degrees — warn if within this margin of a limit
 
 
+_JOINT_NAMES = ["base", "shoulder", "elbow", "wrist pitch", "wrist roll", "wrist yaw"]
+_JOINT_FIX = [
+    "rotate the base back toward center",
+    "tilt the shoulder back (arm more upright)",
+    "straighten the elbow slightly",
+    "level the wrist pitch",
+    "unroll the gripper",
+    "rotate the gripper tip back toward center",
+]
+
+
 def _validate_angles(name, angles):
     """Check angles against joint limits. Returns list of warnings."""
     warnings = []
     for i, angle in enumerate(angles):
         lo, hi = JOINT_LIMITS[i]
-        if angle < lo or angle > hi:
-            warnings.append(f"    ERROR: J{i+1}={angle:.1f} is OUTSIDE limit [{lo}, {hi}]")
-        elif abs(angle - lo) < LIMIT_MARGIN or abs(angle - hi) < LIMIT_MARGIN:
-            warnings.append(f"    WARNING: J{i+1}={angle:.1f} is within {LIMIT_MARGIN} deg of limit [{lo}, {hi}]")
+        jname = _JOINT_NAMES[i]
+        fix = _JOINT_FIX[i]
+        if angle < lo:
+            warnings.append(
+                f"    ERROR: J{i+1} ({jname}) = {angle:.1f} is below minimum {lo}\n"
+                f"           Fix: {fix} (increase J{i+1} by {lo - angle:.0f} deg)"
+            )
+        elif angle > hi:
+            warnings.append(
+                f"    ERROR: J{i+1} ({jname}) = {angle:.1f} is above maximum {hi}\n"
+                f"           Fix: {fix} (decrease J{i+1} by {angle - hi:.0f} deg)"
+            )
+        elif abs(angle - lo) < LIMIT_MARGIN:
+            warnings.append(
+                f"    WARNING: J{i+1} ({jname}) = {angle:.1f} is only {abs(angle - lo):.0f} deg from min {lo}\n"
+                f"           Suggestion: {fix} slightly to add margin"
+            )
+        elif abs(angle - hi) < LIMIT_MARGIN:
+            warnings.append(
+                f"    WARNING: J{i+1} ({jname}) = {angle:.1f} is only {abs(angle - hi):.0f} deg from max {hi}\n"
+                f"           Suggestion: {fix} slightly to add margin"
+            )
     return warnings
 
 
@@ -86,7 +115,26 @@ def main():
     print("\n=== myCobot 280 Waypoint Calibration ===")
     print("For each waypoint, manually move the arm to the desired position,")
     print("then press ENTER to record the joint angles.")
-    print("Press Ctrl+C at any time to abort without saving.\n")
+    print("Press Ctrl+C at any time to abort without saving.")
+    print()
+    print("Joint guide (looking at the robot from the front):")
+    print("  J1 (base):        rotate the whole arm left/right")
+    print("  J2 (shoulder):    tilt the upper arm forward/back")
+    print("  J3 (elbow):       bend the forearm up/down")
+    print("  J4 (wrist pitch): tilt the gripper forward/back")
+    print("  J5 (wrist roll):  roll the gripper clockwise/counter-clockwise")
+    print("  J6 (wrist yaw):   rotate the gripper tip left/right")
+    print()
+    print("If a joint is out of range, the fix is:")
+    print("  J1 too far left/right  → rotate base back toward center")
+    print("  J2 too far forward     → tilt shoulder back (arm more upright)")
+    print("  J3 too far bent        → straighten elbow slightly")
+    print("  J4 too far tilted      → level the wrist")
+    print("  J5 too far rolled      → unroll the gripper")
+    print("  J6 too far rotated     → rotate gripper tip back toward center")
+    print()
+    print("Tip: stay at least 5 degrees inside joint limits to avoid edge cases.")
+    print()
 
     waypoints = {}
     try:
@@ -133,16 +181,20 @@ def main():
                 if actual and len(actual) == 6:
                     max_delta = max(abs(actual[i] - angles[i]) for i in range(6))
                     if max_delta > 5:
-                        print(f"    WARNING: Arm missed target by {max_delta:.1f} deg")
                         worst = max(range(6), key=lambda i: abs(actual[i] - angles[i]))
-                        print(f"    Worst: J{worst+1} target={angles[worst]:.1f} actual={actual[worst]:.1f}")
+                        wname = _JOINT_NAMES[worst]
+                        wfix = _JOINT_FIX[worst]
+                        print(f"    FAILED: Arm could not reach this position (off by {max_delta:.1f} deg)")
+                        print(f"    Worst joint: J{worst+1} ({wname})")
+                        print(f"      Target: {angles[worst]:.1f}  Actual: {actual[worst]:.1f}")
+                        print(f"      Fix: {wfix}")
                         redo = input("    Adjust arm and retry? [Y/n] ").strip().lower()
                         if redo != "n":
                             mc.release_all_servos()
                             print("    Servos released — reposition and try again.")
                             continue
                     else:
-                        print(f"    Reachable (max delta {max_delta:.1f} deg)")
+                        print(f"    OK — reachable (max delta {max_delta:.1f} deg)")
 
                 mc.release_all_servos()
                 waypoints[name] = {
