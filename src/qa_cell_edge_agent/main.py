@@ -30,6 +30,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("qa-cell")
 
+# Suppress noisy HTTP request logs from SDK libraries
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("foundry_sdk").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+
 
 def main() -> None:
     load_dotenv()
