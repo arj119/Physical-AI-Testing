@@ -249,21 +249,25 @@ def run_defect_detection(
                 )
                 captured_ref = _upload_frame(clients, item)
 
-                clients.client.ontology.actions.create_inspection_event(
-                    inspection_id=item["inspection_id"],
-                    robot_id=settings.robot_id,
-                    timestamp=ts,
-                    vision_class=result.detected_class,
-                    vision_confidence=result.confidence,
-                    grip_load=grip_data.normalized_load,
-                    fusion_decision=fusion_result.decision,
-                    fusion_reason=fusion_result.reason,
-                    vision_agrees=fusion_result.vision_agrees,
-                    model_version=model.version,
-                    cycle_time_ms=cycle_time_ms,
-                    review_status=review_status,
-                    captured_image_ref=captured_ref if captured_ref is not None else Empty.value,
-                )
+                try:
+                    clients.client.ontology.actions.create_inspection_event(
+                        inspection_id=item["inspection_id"],
+                        robot_id=settings.robot_id,
+                        timestamp=ts,
+                        vision_class=result.detected_class,
+                        vision_confidence=result.confidence,
+                        grip_load=grip_data.normalized_load,
+                        fusion_decision=fusion_result.decision,
+                        fusion_reason=fusion_result.reason,
+                        vision_agrees=fusion_result.vision_agrees,
+                        model_version=model.version,
+                        cycle_time_ms=cycle_time_ms,
+                        review_status=review_status,
+                        captured_image_ref=captured_ref if captured_ref is not None else Empty.value,
+                    )
+                    logger.info("InspectionEvent created: %s", item["inspection_id"])
+                except Exception as exc:
+                    logger.error("Failed to create InspectionEvent: %s", exc)
             else:
                 logger.debug(
                     "[MOCK] InspectionEvent %s → %s (%s)",
