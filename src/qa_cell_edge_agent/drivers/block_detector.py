@@ -56,8 +56,9 @@ class BlockDetector:
 
     def __init__(
         self,
-        min_area: int = 500,
-        sat_min: int = 40,
+        min_area: int = 2000,
+        max_aspect_ratio: float = 3.0,
+        sat_min: int = 50,
         val_min: int = 50,
         val_max: int = 255,
     ) -> None:
@@ -66,6 +67,8 @@ class BlockDetector:
         ----------
         min_area : int
             Minimum contour area in pixels to count as a block.
+        max_aspect_ratio : float
+            Maximum width/height ratio (filters out long thin shadows).
         sat_min : int
             Minimum saturation to be "colored" (filters out white/gray).
         val_min : int
@@ -74,6 +77,7 @@ class BlockDetector:
             Maximum value.
         """
         self._min_area = min_area
+        self._max_aspect_ratio = max_aspect_ratio
         self._sat_min = sat_min
         self._val_min = val_min
         self._val_max = val_max
@@ -120,8 +124,20 @@ class BlockDetector:
         if not contours:
             return None
 
-        # Filter by area and pick the largest
-        valid = [(c, cv2.contourArea(c)) for c in contours if cv2.contourArea(c) >= self._min_area]
+        # Filter by area and aspect ratio
+        valid = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < self._min_area:
+                continue
+            bx, by, bw, bh = cv2.boundingRect(c)
+            if bh == 0:
+                continue
+            aspect = max(bw, bh) / min(bw, bh)
+            if aspect > self._max_aspect_ratio:
+                continue  # too elongated — shadow or edge, not a block
+            valid.append((c, area))
+
         if not valid:
             return None
 
