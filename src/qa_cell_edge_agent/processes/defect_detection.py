@@ -14,6 +14,7 @@ import atexit
 import json
 import logging
 import queue
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -104,7 +105,15 @@ def run_defect_detection(
 
     logger.info("defect_detection started — robot=%s", settings.robot_id)
 
-    last_heartbeat = 0.0
+    # ── Heartbeat in background thread (not blocked by arm motion) ─
+    def _heartbeat_loop():
+        while True:
+            _send_heartbeat(settings, clients, state, model.version)
+            time.sleep(settings.heartbeat_interval_sec)
+
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
+    heartbeat_thread.start()
+    logger.info("Heartbeat thread started (every %.0fs)", settings.heartbeat_interval_sec)
 
     while True:
         try:
@@ -116,12 +125,6 @@ def run_defect_detection(
 
             # ── Poll operator commands ────────────────────────────
             _poll_commands(settings, clients, state, fusion, arm)
-
-            # ── Send heartbeat ────────────────────────────────────
-            now = time.monotonic()
-            if now - last_heartbeat >= settings.heartbeat_interval_sec:
-                _send_heartbeat(settings, clients, state, model.version)
-                last_heartbeat = now
 
             # ── Update shared sensor state (every cycle) ──────────
             _update_sensor_state(gripper, sensor_state)
