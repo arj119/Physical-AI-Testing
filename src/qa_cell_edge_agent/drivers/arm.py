@@ -106,7 +106,7 @@ class Arm:
 
     # ── public API ────────────────────────────────────────────────────
 
-    MOTION_TIMEOUT = 15  # seconds to wait for arm to reach target
+    MOTION_TIMEOUT = 300  # 5 minutes — effectively no timeout
 
     def go_to(self, waypoint_name: str) -> None:
         """Move to a named waypoint. Blocks until the arm arrives."""

@@ -169,4 +169,4 @@ def _run_one_cycle(
             "frame": frame,
         })
     except Exception:
-        logger.warning("Local queue full — dropping frame for %s", inspection_id)
+        logger.debug("Queue full — dropping frame %s", inspection_id)
