@@ -250,7 +250,12 @@ def run_defect_detection(
                 captured_ref = _upload_frame(clients, item)
 
                 try:
-                    clients.client.ontology.actions.create_inspection_event(
+                    from foundry_sdk_runtime.types import ActionConfig, ActionMode, ReturnEditsMode
+                    response = clients.client.ontology.actions.create_inspection_event(
+                        action_config=ActionConfig(
+                            mode=ActionMode.VALIDATE_AND_EXECUTE,
+                            return_edits=ReturnEditsMode.ALL,
+                        ),
                         inspection_id=item["inspection_id"],
                         robot_id=settings.robot_id,
                         timestamp=ts,
@@ -265,7 +270,12 @@ def run_defect_detection(
                         review_status=review_status,
                         captured_image_ref=captured_ref if captured_ref is not None else Empty.value,
                     )
-                    logger.info("InspectionEvent created: %s", item["inspection_id"])
+                    logger.info(
+                        "InspectionEvent %s: validation=%s, edits=%s",
+                        item["inspection_id"],
+                        response.validation,
+                        response.edits,
+                    )
                 except Exception as exc:
                     logger.error("Failed to create InspectionEvent: %s", exc)
             else:
