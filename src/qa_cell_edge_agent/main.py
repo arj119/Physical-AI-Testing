@@ -22,7 +22,6 @@ from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.processes.sensor_push import run_sensor_push
 from qa_cell_edge_agent.processes.defect_detection import run_defect_detection
 from qa_cell_edge_agent.processes.model_upgrade import run_model_upgrade
-from qa_cell_edge_agent.processes.live_view import run_live_view
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,7 +38,8 @@ def main() -> None:
     parser.add_argument("--mock", action="store_true", help="Mock both hardware and Foundry")
     parser.add_argument("--mock-hardware", action="store_true", help="Mock hardware only")
     parser.add_argument("--mock-foundry", action="store_true", help="Mock Foundry only")
-    parser.add_argument("--live-view", action="store_true", help="Show camera feed with detections")
+    parser.add_argument("--no-pick", action="store_true", help="Skip pick-and-place, just detect and sort to bin waypoint")
+    parser.add_argument("--live-view", action="store_true", help="Show camera feed (run scripts/live_view.py separately instead)")
     args = parser.parse_args()
 
     if args.mock:
@@ -98,6 +98,7 @@ def main() -> None:
         "object_detected": False,
         "vision_confidence": 0.0,
         "joint_temps": [0.0] * 6,
+        "no_pick": args.no_pick,
     })
 
     # Start processes
@@ -123,11 +124,10 @@ def main() -> None:
     }
 
     if args.live_view:
-        processes["live-view"] = Process(
-            target=run_live_view,
-            args=(sensor_state, settings),
-            name="live-view",
-            daemon=True,
+        logger.warning(
+            "NOTE: --live-view conflicts with sensor_push camera access. "
+            "Run 'python scripts/live_view.py' in a separate terminal BEFORE "
+            "starting the agent, or use --mock-hardware for the camera."
         )
 
     for name, proc in processes.items():
@@ -169,13 +169,6 @@ def main() -> None:
                     proc = Process(
                         target=run_model_upgrade,
                         args=(model_reload_event, settings),
-                        name=name,
-                        daemon=True,
-                    )
-                elif name == "live-view":
-                    proc = Process(
-                        target=run_live_view,
-                        args=(sensor_state, settings),
                         name=name,
                         daemon=True,
                     )
