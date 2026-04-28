@@ -26,7 +26,8 @@ WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "waypoints.json")
 # Camera rotation offset: degrees to add to the detected angle to align
 # with J6 zero. Measure once: place cube aligned with gripper at J6=0,
 # note the angle the camera reports, set this to negative of that.
-CAMERA_ROTATION_OFFSET = float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+def _get_camera_rotation_offset() -> float:
+    return float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
 
 
 @dataclass
@@ -245,7 +246,7 @@ class Arm:
         if pick_target and pick_target.reachable:
             x, y = pick_target.coords[0], pick_target.coords[1]
             rx, ry = pick_target.coords[3], pick_target.coords[4]
-            rz = rotation_angle + CAMERA_ROTATION_OFFSET
+            rz = rotation_angle + _get_camera_rotation_offset()
 
             logger.info("Dynamic pick at (%.1f, %.1f) rx=%.1f ry=%.1f rz=%.1f°", x, y, rx, ry, rz)
 

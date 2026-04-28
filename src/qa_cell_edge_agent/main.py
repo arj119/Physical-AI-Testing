@@ -68,6 +68,9 @@ def main() -> None:
     logger.info("  Detection:      %s", settings.detection_mode)
     logger.info("  Model path:     %s", abs_model)
     logger.info("  Capture rate:   %.1f Hz", 1.0 / settings.capture_interval_sec)
+    logger.info("  Cam rot offset: %s°", os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+    logger.info("  Grip height:    %s mm", os.environ.get("GRIP_HEIGHT_MM", "88"))
+    logger.info("  Approach height:%s mm", os.environ.get("APPROACH_HEIGHT_MM", "160"))
     logger.info("=" * 60)
 
     # ── Startup checks ───────────────────────────────────────────
