@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 # Allow running from repo root
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-WAYPOINT_NAMES = ["HOME", "PICK", "BIN_PASS", "BIN_FAIL", "BIN_REVIEW"]
+WAYPOINT_NAMES = ["HOME", "PICK", "BIN_PASS", "BIN_FAIL", "BIN_REVIEW", "SAFE_ABOVE"]
 OUTPUT_FILE = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
 
 JOINT_LIMITS = [

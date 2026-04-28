@@ -106,10 +106,20 @@ class Arm:
 
     # ── public API ────────────────────────────────────────────────────
 
-    MOTION_TIMEOUT = 300  # 5 minutes — effectively no timeout
+    MOTION_TIMEOUT = 300
+    POSITION_TIMEOUT = 10  # seconds to wait for is_in_position
+
+    # Z heights in robot base-frame mm — set via env or .env
+    GRIP_HEIGHT_MM = float(os.environ.get("GRIP_HEIGHT_MM", "88"))
+    APPROACH_HEIGHT_MM = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
+
+    # Fixed downward orientation for picking (rx, ry)
+    # rz is set dynamically from detected block rotation
+    PICK_RX = float(os.environ.get("PICK_RX", "179.87"))
+    PICK_RY = float(os.environ.get("PICK_RY", "-3.78"))
 
     def go_to(self, waypoint_name: str) -> None:
-        """Move to a named waypoint. Blocks until the arm arrives."""
+        """Move to a named waypoint using joint angles. Blocks until arrived."""
         wp = self.waypoints.get(waypoint_name)
         if wp is None:
             logger.error("Unknown waypoint: %s", waypoint_name)
@@ -119,30 +129,69 @@ class Arm:
             time.sleep(0.3)
             return
         try:
-            logger.info("Arm → %s angles=%s speed=%d", wp.name, wp.angles, wp.speed)
+            logger.info("Arm → %s speed=%d", wp.name, wp.speed)
             self._mc.sync_send_angles(wp.angles, wp.speed, timeout=self.MOTION_TIMEOUT)
         except Exception as exc:
             logger.error("Arm go_to(%s) failed: %s", wp.name, exc)
 
-    def go_to_coords(self, coords: List[float], speed: int = 50) -> None:
-        """Move to a Cartesian position. Blocks until the arm arrives."""
+    def _send_coords_and_wait(self, coords: List[float], speed: int = 40) -> bool:
+        """Send Cartesian coords and wait for arrival. Returns True if reached."""
         if self.mock:
-            logger.info("[MOCK] Arm → coords %s", coords)
+            logger.info("[MOCK] Arm → coords [%.1f, %.1f, %.1f]", coords[0], coords[1], coords[2])
+            time.sleep(0.3)
+            return True
+        try:
+            logger.info("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
+            self._mc.send_coords(coords, speed, 0)
+            deadline = time.time() + self.POSITION_TIMEOUT
+            while time.time() < deadline:
+                if self._mc.is_in_position(coords, 1) == 1:
+                    return True
+                time.sleep(0.1)
+            logger.warning("Coords not reached within %ds", self.POSITION_TIMEOUT)
+            return False
+        except Exception as exc:
+            logger.error("send_coords failed: %s", exc)
+            return False
+
+    def _lift_via_angles(self) -> None:
+        """Lift the arm using joint angles (avoids IK failures on Z moves).
+
+        Reads current J1 and J6 (preserving base rotation + gripper angle),
+        uses the SAFE_ABOVE waypoint's J2-J5 for a known-safe raised position.
+        Falls back to HOME if SAFE_ABOVE is not calibrated.
+        """
+        if self.mock:
+            logger.info("[MOCK] Arm → lift via angles")
             time.sleep(0.3)
             return
-        try:
-            logger.info("Arm → coords [%.1f, %.1f, %.1f, %.1f, %.1f, %.1f] speed=%d",
-                        *coords, speed)
-            self._mc.sync_send_coords(coords, speed, mode=0, timeout=self.MOTION_TIMEOUT)
-        except Exception as exc:
-            logger.error("Arm go_to_coords failed: %s", exc)
 
-    # Heights in mm — adjust for your setup
-    # Z heights in robot base-frame coordinates (mm)
-    # Adjust these to match your setup — check with mc.get_coords() at the surface
-    GRIP_HEIGHT_MM = float(os.environ.get("GRIP_HEIGHT_MM", "88"))       # surface level where gripper grabs
-    APPROACH_HEIGHT_MM = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))  # above cube, clear for approach
-    TRANSIT_HEIGHT_MM = float(os.environ.get("TRANSIT_HEIGHT_MM", "200"))    # safe travel height between positions
+        current = self._mc.get_angles()
+        if not current or len(current) != 6:
+            logger.warning("Cannot read angles for lift — going HOME")
+            self.go_to("HOME")
+            return
+
+        safe_wp = self.waypoints.get("SAFE_ABOVE")
+        if safe_wp:
+            # Preserve J1 (base) and J6 (gripper), use safe J2-J5
+            lift_angles = [current[0], safe_wp.angles[1], safe_wp.angles[2],
+                           safe_wp.angles[3], safe_wp.angles[4], current[5]]
+        else:
+            # Fallback: use HOME J2-J5
+            home_wp = self.waypoints.get("HOME")
+            if home_wp:
+                lift_angles = [current[0], home_wp.angles[1], home_wp.angles[2],
+                               home_wp.angles[3], home_wp.angles[4], current[5]]
+            else:
+                logger.warning("No SAFE_ABOVE or HOME waypoint — cannot lift safely")
+                return
+
+        try:
+            logger.info("Arm → lift via angles (J1=%.1f, J6=%.1f)", current[0], current[5])
+            self._mc.sync_send_angles(lift_angles, 25, timeout=self.MOTION_TIMEOUT)
+        except Exception as exc:
+            logger.error("Lift failed: %s", exc)
 
     def pick_and_place(
         self,
@@ -151,82 +200,70 @@ class Arm:
         pick_target: Optional[PickTarget] = None,
         rotation_angle: float = 0.0,
     ) -> None:
-        """Execute a full pick → sort cycle with approach/lift/rotation phases.
+        """Execute pick-and-place following the Elephant Robotics pattern.
 
         Sequence:
-          HOME
-          → open gripper
-          → move above pick position (approach height)
-          → rotate J6 to align with cube
-          → lower to grip height (slow)
-          → close gripper
-          → lift to transit height
-          → move to bin
-          → open gripper
-          → HOME
-
-        Parameters
-        ----------
-        decision : str
-            Sorting decision: "PASS", "FAIL", or "REVIEW".
-        gripper : Gripper
-            Gripper driver instance.
-        pick_target : PickTarget, optional
-            If provided and reachable, uses Cartesian coords for the pick.
-        rotation_angle : float
-            Detected cube rotation in degrees (from camera). Applied to J6
-            with CAMERA_ROTATION_OFFSET correction.
+          1. HOME (angles) — safe known position
+          2. Open gripper
+          3. Approach above target (coords) — dynamic XY, high Z
+          4. Descend to grip height (coords) — same XY, lower Z
+          5. Close gripper
+          6. Lift via angles — preserves J1+J6, safe J2-J5 (never fails)
+          7. Move to bin (angles) — fixed waypoint
+          8. Release gripper
+          9. HOME (angles)
         """
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
-        logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
+        logger.info("Pick-and-place: %s → %s", decision, bin_name)
 
+        # 1. HOME
         self.go_to("HOME")
+
+        # 2. Open gripper
         gripper.open_gripper()
 
-        # Compute gripper rotation: camera angle + offset
-        grip_rz = rotation_angle + CAMERA_ROTATION_OFFSET
-
         if pick_target and pick_target.reachable:
-            coords = pick_target.coords
-            logger.info(
-                "Dynamic pick at (%.1f, %.1f) rz=%.1f° — %.1f mm from base",
-                coords[0], coords[1], grip_rz, pick_target.distance_from_base,
-            )
-            rx, ry = coords[3], coords[4]
+            x, y = pick_target.coords[0], pick_target.coords[1]
+            rz = rotation_angle + CAMERA_ROTATION_OFFSET
 
-            # 1. Lift to transit height above HOME (clear of everything)
-            home_coords = self._mc.get_coords() if not self.mock else [0, 0, 0, 0, 0, 0]
-            if home_coords and len(home_coords) >= 3:
-                lift_from_home = [home_coords[0], home_coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-                self.go_to_coords(lift_from_home)
+            logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f°", x, y, rz)
 
-            # 2. Move horizontally at transit height to above the target
-            above_target = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(above_target)
+            # 3. Approach above target
+            approach = [x, y, self.APPROACH_HEIGHT_MM, self.PICK_RX, self.PICK_RY, rz]
+            reached = self._send_coords_and_wait(approach, speed=40)
+            if not reached:
+                logger.warning("Could not reach approach — falling back to fixed PICK")
+                self.go_to("PICK")
+                gripper.close_gripper()
+                self._lift_via_angles()
+                self.go_to(bin_name)
+                gripper.release()
+                self.go_to("HOME")
+                return
 
-            # 3. Lower to approach height
-            approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(approach, speed=40)
-
-            # 4. Lower to grip height (slow for precision)
-            grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(grip_pos, speed=20)
+            # 4. Descend to grip height
+            grip_pos = [x, y, self.GRIP_HEIGHT_MM, self.PICK_RX, self.PICK_RY, rz]
+            self._send_coords_and_wait(grip_pos, speed=25)
 
             # 5. Close gripper
             gripper.close_gripper()
 
-            # 6. Lift to transit height
-            lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(lift_pos)
+            # 6. Lift via angles (safe, never fails)
+            self._lift_via_angles()
         else:
             if pick_target and not pick_target.reachable:
-                logger.warning("Pick target unreachable — using fixed PICK waypoint")
+                logger.warning("Pick target unreachable — using fixed PICK")
             self.go_to("PICK")
             gripper.close_gripper()
+            self._lift_via_angles()
 
-        # Move to bin and release
+        # 7. Move to bin
         self.go_to(bin_name)
+
+        # 8. Release
         gripper.release()
+
+        # 9. HOME
         self.go_to("HOME")
 
     def safe_position(self) -> None:
