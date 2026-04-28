@@ -276,18 +276,21 @@ def main():
                             break
                         time.sleep(0.1)
 
-                    print(f"  PAUSED above target. Adjust rotation with +/-, then press 'd' to descend")
-                    print(f"  (or 'q' to abort)")
+                    print(f"  PAUSED above target.")
+                    print(f"  Controls: +/-: rotate 1° | ]/[: rotate 5°")
+                    print(f"            Arrow keys: nudge XY by 5mm")
+                    print(f"            'd': descend | 'q': abort")
 
-                    # Wait for user to press 'd' to descend
+                    # Wait for user to adjust and press 'd' to descend
+                    NUDGE_MM = 5.0
                     while True:
                         ret2, frame2 = cap.read()
                         if ret2:
                             disp2 = frame2.copy()
-                            cv2.putText(disp2, "ABOVE TARGET — press 'd' to descend, +/- to rotate",
-                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                            cv2.putText(disp2, f"rz={grip_rz:.0f} (offset={rotation_offset:.0f})",
-                                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            cv2.putText(disp2, "ABOVE TARGET: d=descend | +/-=rot | arrows=nudge XY",
+                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                            cv2.putText(disp2, f"pos=({x:.1f}, {y:.1f}) rz={grip_rz:.0f} offset={rotation_offset:.0f}",
+                                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                             cv2.imshow("Calibration Test", disp2)
 
                         k = cv2.waitKey(1) & 0xFF
@@ -299,30 +302,40 @@ def main():
                         elif k == ord('+') or k == ord('='):
                             rotation_offset += 1
                             grip_rz = detection.rotation_angle + rotation_offset
-                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
-                            mc.send_coords(adj_coords, 20, 0)
-                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord('-'):
                             rotation_offset -= 1
                             grip_rz = detection.rotation_angle + rotation_offset
-                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
-                            mc.send_coords(adj_coords, 20, 0)
-                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord(']'):
                             rotation_offset += 5
                             grip_rz = detection.rotation_angle + rotation_offset
-                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
-                            mc.send_coords(adj_coords, 20, 0)
-                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord('['):
                             rotation_offset -= 5
                             grip_rz = detection.rotation_angle + rotation_offset
-                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
-                            mc.send_coords(adj_coords, 20, 0)
-                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
-                    else:
-                        # Only descend if 'd' was pressed (not 'q')
-                        pass
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
+                        # Arrow keys (OpenCV key codes)
+                        elif k == 82 or k == 0:  # Up arrow
+                            x += NUDGE_MM
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  nudge X+ → ({x:.1f}, {y:.1f})")
+                        elif k == 84 or k == 1:  # Down arrow
+                            x -= NUDGE_MM
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  nudge X- → ({x:.1f}, {y:.1f})")
+                        elif k == 81 or k == 2:  # Left arrow
+                            y += NUDGE_MM
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  nudge Y+ → ({x:.1f}, {y:.1f})")
+                        elif k == 83 or k == 3:  # Right arrow
+                            y -= NUDGE_MM
+                            mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
+                            print(f"  nudge Y- → ({x:.1f}, {y:.1f})")
 
                     if k == ord('d'):
                         # 4. Descend
