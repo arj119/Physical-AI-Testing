@@ -1,13 +1,11 @@
 #!/usr/bin/env python3
-"""Live camera view with inference overlay.
+"""Live camera view with color block detection overlay.
 
-Shows what the robot sees with bounding boxes, class labels, confidence
-scores, and fusion decisions drawn on the frame. No arm movement — just
-observation.
+Shows the camera feed with workspace zone, block detection bounding boxes,
+color classification, rotation angle, and sorting decisions. No arm movement.
 
 Usage:
     python scripts/live_view.py
-    python scripts/live_view.py --no-inference   # just camera, no model
 """
 
 from __future__ import annotations
@@ -24,8 +22,6 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from qa_cell_edge_agent.config.settings import Settings
-from qa_cell_edge_agent.models.inference import ModelInference
-from qa_cell_edge_agent.fusion.engine import FusionEngine
 
 DECISION_COLORS = {
     "PASS": (0, 200, 0),

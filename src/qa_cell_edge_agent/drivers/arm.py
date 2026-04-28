@@ -236,16 +236,3 @@ class Arm:
         if not self.mock and self._mc:
             self._mc.release_all_servos()
 
-    # ── internals ─────────────────────────────────────────────────────
-
-    def _wait_until_stopped(self, timeout: float = 5.0) -> None:
-        """Block until the arm reports it has stopped moving."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                if self._mc.is_moving() == 0:
-                    return
-            except Exception:
-                pass
-            time.sleep(0.1)
-        logger.warning("Arm motion timed out after %.1fs", timeout)

@@ -34,19 +34,19 @@ class Settings:
     vision_stream_rid: str = field(
         default_factory=lambda: os.environ.get(
             "VISION_STREAM_RID",
-            "ri.foundry.main.dataset.7d217bc6-f5e9-4468-b1c3-fb05ae3628d0",
+            "",
         )
     )
     grip_stream_rid: str = field(
         default_factory=lambda: os.environ.get(
             "GRIP_STREAM_RID",
-            "ri.foundry.main.dataset.8db216af-efd8-43e2-8f18-ff135536502d",
+            "",
         )
     )
     telemetry_stream_rid: str = field(
         default_factory=lambda: os.environ.get(
             "TELEMETRY_STREAM_RID",
-            "ri.foundry.main.dataset.90a6ab73-e170-4e1d-bc5b-30e19367a0f8",
+            "",
         )
     )
 
@@ -91,6 +91,13 @@ class Settings:
         default_factory=lambda: float(os.environ.get("MODEL_POLL_INTERVAL_SEC", "60"))
     )
     model_staging_dir: str = "./models/staging/"
+
+    # ── Detection mode ───────────────────────────────────────────────
+    # "color" = HSV block detection (no model needed, sorts by color)
+    # "model" = YOLOv5 inference + sensor fusion (needs trained model)
+    detection_mode: str = field(
+        default_factory=lambda: os.environ.get("DETECTION_MODE", "color")
+    )
 
     # ── Hardware ──────────────────────────────────────────────────────
     mycobot_port: str = field(
