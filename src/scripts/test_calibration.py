@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
+from qa_cell_edge_agent.drivers.block_detector import BlockDetector
+from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
 
 
 def main():
@@ -69,12 +71,18 @@ def main():
     print("Instructions:")
     print("  - Click anywhere in the camera view to see predicted robot XY")
     print("  - Press 'm' to MOVE the arm to the last clicked point")
+    print("  - Press '+'/'-' to adjust CAMERA_ROTATION_OFFSET by 5 degrees")
     print("  - Press 'r' to read current robot coords")
     print("  - Press 's' to release SERVOS (arm goes limp for manual positioning)")
     print("  - Press 'q' to quit")
     print()
     print("  Workflow: click a spot → press 'm' → check if gripper goes there")
     print()
+
+    block_detector = BlockDetector()
+    workspace = WorkspaceMonitor()
+    rotation_offset = float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+    print(f"  Current CAMERA_ROTATION_OFFSET: {rotation_offset}°")
 
     clicked_points = []
     last_target = None
@@ -112,8 +120,20 @@ def main():
             cv2.putText(display, label, (px + 10, py - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-        cv2.putText(display, "Click: pixel->robot | R: read robot coords | Q: quit",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        # Detect block and show rotation
+        zone_mask = workspace._zone_mask if workspace.is_configured else None
+        detection = block_detector.detect(frame, zone_mask=zone_mask)
+        if detection is not None:
+            # Draw rotated bbox
+            box_points = cv2.boxPoints(detection.rotated_bbox).astype(int)
+            cv2.drawContours(display, [box_points], 0, (0, 255, 0), 2)
+            # Show detected angle + corrected angle
+            corrected = detection.rotation_angle + rotation_offset
+            cv2.putText(display, f"Detected: {detection.rotation_angle:.0f} deg | Corrected (rz): {corrected:.0f} deg | Offset: {rotation_offset:.0f}",
+                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
+        cv2.putText(display, "Click:move | +/-:rotation | R:read | S:servos | Q:quit",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
 
         cv2.imshow("Calibration Test", display)
 
@@ -140,8 +160,12 @@ def main():
                         print(f"\n  Step 1: SAFE_ABOVE...")
                         mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
 
-                # 2. Approach above target (high Z)
-                approach_coords = [x, y, approach_z, rx, ry, rz]
+                # 2. Approach above target (high Z) — use detected rotation if available
+                grip_rz = rz
+                if detection is not None:
+                    grip_rz = detection.rotation_angle + rotation_offset
+                    print(f"  Gripper rz: {grip_rz:.1f}° (detected={detection.rotation_angle:.1f} + offset={rotation_offset:.1f})")
+                approach_coords = [x, y, approach_z, rx, ry, grip_rz]
                 print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
                 mc.send_coords(approach_coords, 40, 0)
                 deadline = time.time() + 10
@@ -151,6 +175,7 @@ def main():
                     time.sleep(0.1)
 
                 # 3. Descend to pick height
+                move_coords = [x, y, z, rx, ry, grip_rz]
                 print(f"  Step 3: Descend to z={z:.0f}...")
                 mc.send_coords(move_coords, 25, 0)
                 deadline = time.time() + 10
@@ -176,6 +201,14 @@ def main():
                 print(f"  Cannot move — target is outside workspace")
             else:
                 print(f"  Click a point first, then press 'm'")
+        elif key == ord('+') or key == ord('='):
+            rotation_offset += 5
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (increased)")
+            print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
+        elif key == ord('-'):
+            rotation_offset -= 5
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (decreased)")
+            print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
         elif key == ord('s'):
             mc.release_all_servos()
             print("  Servos released — arm is free to move manually")
