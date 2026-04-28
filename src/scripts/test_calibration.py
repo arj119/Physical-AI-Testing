@@ -260,11 +260,34 @@ def main():
                 print("  No block detected — place a block in the zone first")
         elif key == ord('+') or key == ord('='):
             rotation_offset += 5
-            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (increased)")
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}°")
+            # If arm is at a position, rotate J6 to preview the new angle
+            try:
+                current = mc.get_angles()
+                if current and len(current) == 6 and detection is not None:
+                    new_rz = detection.rotation_angle + rotation_offset
+                    current_coords = mc.get_coords()
+                    if current_coords and len(current_coords) == 6:
+                        current_coords[5] = new_rz
+                        mc.send_coords(current_coords, 20, 0)
+                        print(f"  Rotating gripper to rz={new_rz:.0f}° (preview)")
+            except Exception:
+                pass
             print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
         elif key == ord('-'):
             rotation_offset -= 5
-            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (decreased)")
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}°")
+            try:
+                current = mc.get_angles()
+                if current and len(current) == 6 and detection is not None:
+                    new_rz = detection.rotation_angle + rotation_offset
+                    current_coords = mc.get_coords()
+                    if current_coords and len(current_coords) == 6:
+                        current_coords[5] = new_rz
+                        mc.send_coords(current_coords, 20, 0)
+                        print(f"  Rotating gripper to rz={new_rz:.0f}° (preview)")
+            except Exception:
+                pass
             print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
         elif key == ord('s'):
             mc.release_all_servos()
