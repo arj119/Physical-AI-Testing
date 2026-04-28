@@ -49,6 +49,7 @@ class InferenceResult:
     confidence: float      # [0, 1]
     bounding_box: List[float]  # [x, y, w, h]
     inference_time_ms: int # wall-clock inference duration
+    rotation_angle: float = 0.0  # yaw in degrees, normalised to [-45, 45]
 
 
 class ModelInference:

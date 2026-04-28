@@ -28,6 +28,7 @@ from qa_cell_edge_agent.config.foundry import FoundryClients
 from qa_cell_edge_agent.drivers.arm import Arm
 from qa_cell_edge_agent.drivers.block_detector import BlockDetector
 from qa_cell_edge_agent.drivers.gripper import Gripper
+from qa_cell_edge_agent.drivers.orientation import estimate_yaw_in_bbox
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
 from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
 from qa_cell_edge_agent.drivers.arm import DECISION_TO_BIN
@@ -230,7 +231,17 @@ def run_defect_detection(
                 detected_class = result.detected_class
                 confidence = result.confidence
                 bounding_box = result.bounding_box
-                rotation_angle = 0.0
+
+                # YOLO has no rotation head — estimate yaw inside the bbox
+                # using Otsu thresholding + minAreaRect on the original
+                # (un-masked) frame so the cube edges are intact.
+                oriented = estimate_yaw_in_bbox(frame, bounding_box)
+                rotation_angle = oriented.yaw_deg if oriented is not None else 0.0
+                if oriented is not None:
+                    logger.debug(
+                        "YOLO yaw estimate: %.1f° (centre=%s)",
+                        rotation_angle, oriented.centre,
+                    )
 
                 # Decision from sensor fusion
                 grip_data_for_fusion = gripper.read()
