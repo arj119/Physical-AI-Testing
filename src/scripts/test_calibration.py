@@ -70,6 +70,7 @@ def main():
     print("  - Click anywhere in the camera view to see predicted robot XY")
     print("  - Press 'm' to MOVE the arm to the last clicked point")
     print("  - Press 'r' to read current robot coords")
+    print("  - Press 's' to release SERVOS (arm goes limp for manual positioning)")
     print("  - Press 'q' to quit")
     print()
     print("  Workflow: click a spot → press 'm' → check if gripper goes there")
@@ -150,6 +151,11 @@ def main():
                 print(f"  Cannot move — target is outside workspace")
             else:
                 print(f"  Click a point first, then press 'm'")
+        elif key == ord('s'):
+            mc.release_all_servos()
+            print("  Servos released — arm is free to move manually")
+            print("  Press 'r' to read position after repositioning")
+            print()
         elif key == ord('r'):
             coords = mc.get_coords()
             angles = mc.get_angles()
