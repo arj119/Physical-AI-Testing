@@ -107,7 +107,7 @@ class Arm:
     # ── public API ────────────────────────────────────────────────────
 
     MOTION_TIMEOUT = 300
-    POSITION_TIMEOUT = 10  # seconds to wait for is_in_position
+    POSITION_TIMEOUT = 20  # seconds to wait for is_in_position
 
     # Z heights in robot base-frame mm — set via env or .env
     GRIP_HEIGHT_MM = float(os.environ.get("GRIP_HEIGHT_MM", "88"))
@@ -143,11 +143,24 @@ class Arm:
         try:
             logger.info("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
             self._mc.send_coords(coords, speed, 0)
+            time.sleep(0.5)  # let the arm start moving before polling
+
             deadline = time.time() + self.POSITION_TIMEOUT
             while time.time() < deadline:
-                if self._mc.is_in_position(coords, 1) == 1:
-                    return True
+                try:
+                    if self._mc.is_in_position(coords, 1) == 1:
+                        return True
+                except Exception:
+                    pass
+                # Also check if arm stopped moving (alternative completion check)
+                try:
+                    if self._mc.is_moving() == 0:
+                        time.sleep(0.3)  # settle
+                        return True
+                except Exception:
+                    pass
                 time.sleep(0.1)
+
             logger.warning("Coords not reached within %ds", self.POSITION_TIMEOUT)
             return False
         except Exception as exc:
