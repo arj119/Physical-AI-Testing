@@ -127,25 +127,38 @@ def main():
                 rx, ry, rz = transform._approach_angles
                 move_coords = [x, y, z, rx, ry, rz]
 
-                # Go to SAFE_ABOVE first to avoid hitting the surface
+                # Mimic the pick-and-place approach sequence
                 import json as _json
                 wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
+                approach_z = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
+
+                # 1. Go to SAFE_ABOVE
                 if os.path.isfile(wp_file):
                     with open(wp_file) as _f:
                         _wp = _json.load(_f)
                     if "SAFE_ABOVE" in _wp:
-                        print(f"\n  Moving to SAFE_ABOVE first...")
-                        mc.send_angles(_wp["SAFE_ABOVE"]["angles"], 30)
-                        time.sleep(3)
+                        print(f"\n  Step 1: SAFE_ABOVE...")
+                        mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
 
-                print(f"  Moving arm to ({x:.1f}, {y:.1f}, z={z:.1f})...")
-                mc.send_coords(move_coords, 30, 0)
-                # Wait for arrival
-                deadline = time.time() + 15
+                # 2. Approach above target (high Z)
+                approach_coords = [x, y, approach_z, rx, ry, rz]
+                print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
+                mc.send_coords(approach_coords, 40, 0)
+                deadline = time.time() + 10
+                while time.time() < deadline:
+                    if mc.is_in_position(approach_coords, 1) == 1:
+                        break
+                    time.sleep(0.1)
+
+                # 3. Descend to pick height
+                print(f"  Step 3: Descend to z={z:.0f}...")
+                mc.send_coords(move_coords, 25, 0)
+                deadline = time.time() + 10
                 while time.time() < deadline:
                     if mc.is_in_position(move_coords, 1) == 1:
                         break
                     time.sleep(0.1)
+
                 actual = mc.get_coords()
                 if actual and len(actual) >= 3:
                     err_x = abs(actual[0] - x)
@@ -157,7 +170,7 @@ def main():
                     else:
                         print(f"  CHECK — look if gripper tip is at the clicked spot")
                 else:
-                    print(f"  Could not verify position")
+                    print(f"  Could not verify position (timeout or IK failure)")
                 print()
             elif last_target:
                 print(f"  Cannot move — target is outside workspace")
