@@ -68,18 +68,28 @@ def main():
     print()
     print("Instructions:")
     print("  - Click anywhere in the camera view to see predicted robot XY")
-    print("  - Press 'r' to read current robot coords and compare")
+    print("  - Press 'm' to MOVE the arm to the last clicked point")
+    print("  - Press 'r' to read current robot coords")
     print("  - Press 'q' to quit")
+    print()
+    print("  Workflow: click a spot → press 'm' → check if gripper goes there")
     print()
 
     clicked_points = []
+    last_target = None
 
     def on_click(event, x, y, flags, param):
+        nonlocal last_target
         if event == cv2.EVENT_LBUTTONDOWN:
             clicked_points.append((x, y))
             target = transform.pixel_to_robot(x, y)
+            last_target = target
             print(f"  Pixel ({x}, {y}) → Robot ({target.coords[0]:.1f}, {target.coords[1]:.1f}) "
                   f"dist={target.distance_from_base:.1f}mm reachable={target.reachable}")
+            if target.reachable:
+                print(f"    Press 'm' to move arm there")
+            else:
+                print(f"    WARNING: outside workspace — arm cannot reach")
 
     cv2.namedWindow("Calibration Test", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Calibration Test", 960, 720)
@@ -109,6 +119,37 @@ def main():
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
+        elif key == ord('m'):
+            if last_target and last_target.reachable:
+                x, y = last_target.coords[0], last_target.coords[1]
+                z = transform._z_pick
+                rx, ry, rz = transform._approach_angles
+                move_coords = [x, y, z, rx, ry, rz]
+                print(f"\n  Moving arm to ({x:.1f}, {y:.1f}, z={z:.1f})...")
+                mc.send_coords(move_coords, 30, 0)
+                # Wait for arrival
+                deadline = time.time() + 15
+                while time.time() < deadline:
+                    if mc.is_in_position(move_coords, 1) == 1:
+                        break
+                    time.sleep(0.1)
+                actual = mc.get_coords()
+                if actual and len(actual) >= 3:
+                    err_x = abs(actual[0] - x)
+                    err_y = abs(actual[1] - y)
+                    print(f"  Arrived: x={actual[0]:.1f}, y={actual[1]:.1f}, z={actual[2]:.1f}")
+                    print(f"  Error: dx={err_x:.1f}mm, dy={err_y:.1f}mm")
+                    if err_x < 5 and err_y < 5:
+                        print(f"  GOOD — within 5mm accuracy")
+                    else:
+                        print(f"  CHECK — look if gripper tip is at the clicked spot")
+                else:
+                    print(f"  Could not verify position")
+                print()
+            elif last_target:
+                print(f"  Cannot move — target is outside workspace")
+            else:
+                print(f"  Click a point first, then press 'm'")
         elif key == ord('r'):
             coords = mc.get_coords()
             angles = mc.get_angles()
