@@ -193,6 +193,12 @@ class Arm:
         except Exception as exc:
             logger.error("Lift failed: %s", exc)
 
+    def _go_safe(self, waypoint_name: str) -> None:
+        """Move to a waypoint via SAFE_ABOVE to avoid camera collisions."""
+        if "SAFE_ABOVE" in self.waypoints:
+            self.go_to("SAFE_ABOVE")
+        self.go_to(waypoint_name)
+
     def pick_and_place(
         self,
         decision: str,
@@ -202,24 +208,25 @@ class Arm:
     ) -> None:
         """Execute pick-and-place following the Elephant Robotics pattern.
 
+        All transit between positions goes via SAFE_ABOVE to clear the
+        overhead camera mount.
+
         Sequence:
-          1. HOME (angles) — safe known position
+          1. HOME → SAFE_ABOVE
           2. Open gripper
-          3. Approach above target (coords) — dynamic XY, high Z
-          4. Descend to grip height (coords) — same XY, lower Z
+          3. Approach above target (coords)
+          4. Descend to grip height (coords)
           5. Close gripper
-          6. Lift via angles — preserves J1+J6, safe J2-J5 (never fails)
-          7. Move to bin (angles) — fixed waypoint
+          6. Lift via angles (safe J2-J5)
+          7. SAFE_ABOVE → BIN
           8. Release gripper
-          9. HOME (angles)
+          9. SAFE_ABOVE → HOME
         """
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: %s → %s", decision, bin_name)
 
-        # 1. HOME
+        # 1. HOME then raise to safe height
         self.go_to("HOME")
-
-        # 2. Open gripper
         gripper.open_gripper()
 
         if pick_target and pick_target.reachable:
@@ -228,17 +235,21 @@ class Arm:
 
             logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f°", x, y, rz)
 
+            # 2. Go to SAFE_ABOVE before approaching (clears camera)
+            if "SAFE_ABOVE" in self.waypoints:
+                self.go_to("SAFE_ABOVE")
+
             # 3. Approach above target
             approach = [x, y, self.APPROACH_HEIGHT_MM, self.PICK_RX, self.PICK_RY, rz]
             reached = self._send_coords_and_wait(approach, speed=40)
             if not reached:
                 logger.warning("Could not reach approach — falling back to fixed PICK")
-                self.go_to("PICK")
+                self._go_safe("PICK")
                 gripper.close_gripper()
                 self._lift_via_angles()
-                self.go_to(bin_name)
+                self._go_safe(bin_name)
                 gripper.release()
-                self.go_to("HOME")
+                self._go_safe("HOME")
                 return
 
             # 4. Descend to grip height
@@ -253,18 +264,18 @@ class Arm:
         else:
             if pick_target and not pick_target.reachable:
                 logger.warning("Pick target unreachable — using fixed PICK")
-            self.go_to("PICK")
+            self._go_safe("PICK")
             gripper.close_gripper()
             self._lift_via_angles()
 
-        # 7. Move to bin
-        self.go_to(bin_name)
+        # 7. Move to bin via SAFE_ABOVE
+        self._go_safe(bin_name)
 
         # 8. Release
         gripper.release()
 
-        # 9. HOME
-        self.go_to("HOME")
+        # 9. HOME via SAFE_ABOVE
+        self._go_safe("HOME")
 
     def safe_position(self) -> None:
         """Move to HOME and disable servos (E-STOP safe state)."""
