@@ -10,8 +10,8 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple
 
 from qa_cell_edge_agent.drivers.connection import get_connection
 
@@ -24,9 +24,56 @@ logger = logging.getLogger(__name__)
 WAYPOINTS_FILE = os.path.join(os.path.dirname(__file__), "waypoints.json")
 
 # Camera rotation offset: degrees to add to the detected angle to align
-# with J6 zero. Measure once: place cube aligned with gripper at J6=0,
-# note the angle the camera reports, set this to negative of that.
-CAMERA_ROTATION_OFFSET = float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+# with J6 zero. Measure once with scripts/calibrate_yaw_offset.py.
+# CAMERA_ROTATION_OFFSET_DEG is the canonical name; CAMERA_ROTATION_OFFSET
+# kept for backwards compatibility.
+CAMERA_ROTATION_OFFSET = float(
+    os.environ.get(
+        "CAMERA_ROTATION_OFFSET_DEG",
+        os.environ.get("CAMERA_ROTATION_OFFSET", "0"),
+    )
+)
+
+# Closed-loop pick parameters (env-tunable; see config/settings.py)
+MAX_PICK_RETRIES = int(os.environ.get("MAX_PICK_RETRIES", "2"))
+GRIP_LOAD_SUCCESS_THRESHOLD = float(os.environ.get("GRIP_LOAD_SUCCESS_THRESHOLD", "0.15"))
+GRIP_VERIFY_DELAY_S = float(os.environ.get("GRIP_VERIFY_DELAY_S", "0.4"))
+RETRY_NUDGE_MM = float(os.environ.get("RETRY_NUDGE_MM", "1.5"))
+
+
+@dataclass
+class PickOutcome:
+    """Result of a pick_and_place call.
+
+    ``success`` is True iff the gripper reported load above the threshold
+    after at least one closed-loop attempt. ``attempts`` counts the total
+    number of try_pick invocations (1 for first-try success, ≤ MAX+1 on
+    failure). ``last_load`` is the final normalised load reading.
+    """
+
+    success: bool
+    attempts: int
+    last_load: float = 0.0
+    final_pose: Optional[Tuple[float, float, float]] = None  # (x_mm, y_mm, yaw_deg)
+    total_time_s: float = 0.0
+    bin_name: Optional[str] = None
+    attempt_loads: List[float] = field(default_factory=list)
+
+    def as_dict(self) -> Dict[str, object]:
+        return {
+            "success": self.success,
+            "attempts": self.attempts,
+            "last_load": round(self.last_load, 4),
+            "final_pose": list(self.final_pose) if self.final_pose else None,
+            "total_time_s": round(self.total_time_s, 3),
+            "bin_name": self.bin_name,
+            "attempt_loads": [round(v, 4) for v in self.attempt_loads],
+        }
+
+
+# Type for the optional re-detection callback. Returns updated
+# (coords, rotation_angle) or None if no detection.
+RedetectFn = Callable[[], Optional[Tuple["PickTarget", float]]]
 
 
 @dataclass
@@ -262,6 +309,47 @@ class Arm:
     APPROACH_HEIGHT_MM = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))  # above cube, clear for approach
     TRANSIT_HEIGHT_MM = float(os.environ.get("TRANSIT_HEIGHT_MM", "200"))    # safe travel height between positions
 
+    def _try_pick(
+        self,
+        gripper: Gripper,
+        pick_target: PickTarget,
+        grip_rz: float,
+    ) -> float:
+        """Execute one approach → grip → verify cycle. Returns normalised load.
+
+        Caller decides success/failure by comparing the returned load to
+        ``GRIP_LOAD_SUCCESS_THRESHOLD``. On any failure the gripper is
+        opened and the arm is lifted to TRANSIT height — the caller is
+        responsible for parking at SCOUT before re-detection.
+        """
+        coords = pick_target.coords
+        rx, ry = coords[3], coords[4]
+
+        # Move horizontally at transit height to above the target
+        above_target = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
+        self.go_to_coords(above_target)
+
+        # Lower to approach height
+        approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, grip_rz]
+        self.go_to_coords(approach, speed=40)
+
+        # Lower to grip height (slow for precision)
+        grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, grip_rz]
+        self.go_to_coords(grip_pos, speed=20)
+
+        # Close gripper
+        gripper.close_gripper()
+
+        # Verify load
+        time.sleep(GRIP_VERIFY_DELAY_S)
+        load = float(gripper.read().normalized_load)
+
+        # Lift to transit height regardless — caller decides next step
+        lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
+        self.go_to_coords(lift_pos)
+
+        return load
+
     def pick_and_place(
         self,
         decision: str,
@@ -269,20 +357,17 @@ class Arm:
         pick_target: Optional[PickTarget] = None,
         rotation_angle: float = 0.0,
         bin_override: Optional[str] = None,
-    ) -> None:
-        """Execute a full pick → sort cycle with approach/lift/rotation phases.
+        redetect_cb: Optional[RedetectFn] = None,
+        max_retries: Optional[int] = None,
+    ) -> PickOutcome:
+        """Execute a full pick → sort cycle with closed-loop retry.
 
-        Sequence:
-          HOME
-          → open gripper
-          → move above pick position (approach height)
-          → rotate J6 to align with cube
-          → lower to grip height (slow)
-          → close gripper
-          → lift to transit height
-          → move to bin
-          → open gripper
-          → HOME
+        Sequence (per attempt):
+          HOME → open gripper → SCOUT (if retry) → re-detect (if cb)
+          → above target → APPROACH → GRIP → close → verify load → lift
+          if load ≥ threshold: → bin → release → HOME, return success
+          else: → SCOUT → next attempt
+        On exhaustion: → SCOUT, return failure (caller forces REVIEW).
 
         Parameters
         ----------
@@ -291,62 +376,152 @@ class Arm:
         gripper : Gripper
             Gripper driver instance.
         pick_target : PickTarget, optional
-            If provided and reachable, uses Cartesian coords for the pick.
+            If provided and reachable, uses Cartesian coords. If None, falls
+            back to the static PICK waypoint with no closed-loop verify.
         rotation_angle : float
-            Detected cube rotation in degrees (from camera). Applied to J6
-            with CAMERA_ROTATION_OFFSET correction.
+            Detected cube yaw in degrees (CAMERA_ROTATION_OFFSET applied).
+        bin_override : str, optional
+            Force a specific bin waypoint (overrides DECISION_TO_BIN).
+        redetect_cb : callable, optional
+            Called between failed attempts to refresh (PickTarget, yaw_deg).
+            Signature: ``() -> Optional[(PickTarget, float)]``. If None,
+            retries reuse the original pose with a small XY nudge.
+        max_retries : int, optional
+            Override MAX_PICK_RETRIES for this call (e.g. 0 to disable).
         """
+        t0 = time.monotonic()
         bin_name = bin_override or DECISION_TO_BIN.get(decision, "BIN_REVIEW")
-        logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
+        retry_budget = MAX_PICK_RETRIES if max_retries is None else max(0, max_retries)
+        logger.info(
+            "Pick-and-place: decision=%s → bin=%s (max_retries=%d)",
+            decision, bin_name, retry_budget,
+        )
 
         self.go_to("HOME")
         gripper.open_gripper()
 
-        # Compute gripper rotation: camera angle + offset
-        grip_rz = rotation_angle + CAMERA_ROTATION_OFFSET
-
-        if pick_target and pick_target.reachable:
-            coords = pick_target.coords
-            logger.info(
-                "Dynamic pick at (%.1f, %.1f) rz=%.1f° — %.1f mm from base",
-                coords[0], coords[1], grip_rz, pick_target.distance_from_base,
-            )
-            rx, ry = coords[3], coords[4]
-
-            # 1. Lift to transit height above HOME (clear of everything)
-            home_coords = self._mc.get_coords() if not self.mock else [0, 0, 0, 0, 0, 0]
-            if home_coords and len(home_coords) >= 3:
-                lift_from_home = [home_coords[0], home_coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-                self.go_to_coords(lift_from_home)
-
-            # 2. Move horizontally at transit height to above the target
-            above_target = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(above_target)
-
-            # 3. Lower to approach height
-            approach = [coords[0], coords[1], self.APPROACH_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(approach, speed=40)
-
-            # 4. Lower to grip height (slow for precision)
-            grip_pos = [coords[0], coords[1], self.GRIP_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(grip_pos, speed=20)
-
-            # 5. Close gripper
-            gripper.close_gripper()
-
-            # 6. Lift to transit height
-            lift_pos = [coords[0], coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz]
-            self.go_to_coords(lift_pos)
-        else:
+        # Static-waypoint fallback — no closed-loop verify possible
+        if not (pick_target and pick_target.reachable):
             if pick_target and not pick_target.reachable:
                 logger.warning("Pick target unreachable — using fixed PICK waypoint")
             self.go_to("PICK")
             gripper.close_gripper()
+            self.go_to(bin_name)
+            gripper.release()
+            self.go_to("HOME")
+            return PickOutcome(
+                success=True,
+                attempts=1,
+                last_load=0.0,
+                final_pose=None,
+                total_time_s=round(time.monotonic() - t0, 3),
+                bin_name=bin_name,
+            )
 
-        # Move to bin and release
-        self.go_to(bin_name)
-        gripper.release()
-        self.go_to("HOME")
+        # Closed-loop retry loop ──────────────────────────────────────
+        current_target = pick_target
+        current_yaw = rotation_angle
+        attempt_loads: List[float] = []
+        last_pose: Optional[Tuple[float, float]] = None
+
+        # Lift the arm clear of HOME once before the first approach so
+        # the descent path is consistent across attempts.
+        home_coords = self._mc.get_coords() if not self.mock else [0, 0, 0, 0, 0, 0]
+        if home_coords and len(home_coords) >= 3:
+            grip_rz0 = current_yaw + CAMERA_ROTATION_OFFSET
+            rx, ry = current_target.coords[3], current_target.coords[4]
+            self.go_to_coords(
+                [home_coords[0], home_coords[1], self.TRANSIT_HEIGHT_MM, rx, ry, grip_rz0]
+            )
+
+        for attempt in range(retry_budget + 1):
+            if attempt > 0:
+                # Park outside the camera zone for a clean re-detection
+                self.go_to("SCOUT")
+                gripper.open_gripper()
+
+                if redetect_cb is not None:
+                    refreshed = redetect_cb()
+                    if refreshed is None:
+                        logger.warning(
+                            "redetect_cb returned no detection on attempt %d — aborting retries",
+                            attempt + 1,
+                        )
+                        break
+                    current_target, current_yaw = refreshed
+                    if not current_target.reachable:
+                        logger.warning("Re-detected pose unreachable — aborting retries")
+                        break
+
+                    # If the new pose hasn't moved, nudge XY a tad to break
+                    # any stuck calibration error.
+                    new_pose = (current_target.coords[0], current_target.coords[1])
+                    if last_pose is not None and (
+                        abs(new_pose[0] - last_pose[0]) < 1.0
+                        and abs(new_pose[1] - last_pose[1]) < 1.0
+                    ):
+                        nudged = list(current_target.coords)
+                        nudged[0] += RETRY_NUDGE_MM
+                        from qa_cell_edge_agent.drivers.transforms import PickTarget as _PT
+                        current_target = _PT(
+                            coords=nudged,
+                            pixel_centre=current_target.pixel_centre,
+                            reachable=current_target.reachable,
+                            distance_from_base=current_target.distance_from_base,
+                        )
+                        logger.info("Pose unchanged — applied %.1fmm XY nudge", RETRY_NUDGE_MM)
+
+            grip_rz = current_yaw + CAMERA_ROTATION_OFFSET
+            coords = current_target.coords
+            logger.info(
+                "Pick attempt %d/%d at (%.1f, %.1f) rz=%.1f° — %.1f mm from base",
+                attempt + 1, retry_budget + 1,
+                coords[0], coords[1], grip_rz, current_target.distance_from_base,
+            )
+            load = self._try_pick(gripper, current_target, grip_rz)
+            attempt_loads.append(load)
+            last_pose = (coords[0], coords[1])
+
+            logger.info(
+                "Pick attempt %d/%d load=%.3f (threshold=%.3f) angle=%.1f",
+                attempt + 1, retry_budget + 1,
+                load, GRIP_LOAD_SUCCESS_THRESHOLD, grip_rz,
+            )
+
+            if load >= GRIP_LOAD_SUCCESS_THRESHOLD:
+                # Success — go to bin, release, home
+                self.go_to(bin_name)
+                gripper.release()
+                self.go_to("HOME")
+                return PickOutcome(
+                    success=True,
+                    attempts=attempt + 1,
+                    last_load=load,
+                    final_pose=(coords[0], coords[1], current_yaw),
+                    total_time_s=round(time.monotonic() - t0, 3),
+                    bin_name=bin_name,
+                    attempt_loads=attempt_loads,
+                )
+
+            gripper.open_gripper()
+
+        # Exhausted retries — leave the part on the workspace, park safely
+        logger.error(
+            "Pick-and-place failed after %d attempt(s) — last load=%.3f. "
+            "Leaving part on workspace; caller should mark REVIEW.",
+            len(attempt_loads), attempt_loads[-1] if attempt_loads else 0.0,
+        )
+        self.go_to("SCOUT")
+        gripper.open_gripper()
+        return PickOutcome(
+            success=False,
+            attempts=len(attempt_loads),
+            last_load=attempt_loads[-1] if attempt_loads else 0.0,
+            final_pose=(current_target.coords[0], current_target.coords[1], current_yaw),
+            total_time_s=round(time.monotonic() - t0, 3),
+            bin_name=bin_name,
+            attempt_loads=attempt_loads,
+        )
 
     def safe_position(self) -> None:
         """Move to HOME and disable servos (E-STOP safe state)."""
