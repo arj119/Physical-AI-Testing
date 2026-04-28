@@ -103,7 +103,11 @@ def resolve_bin_name(decision: str, dominant_color: Optional[str] = None) -> str
 
 
 def _load_waypoints_from_file() -> Optional[Dict[str, Waypoint]]:
-    """Load calibrated waypoints from ``waypoints.json`` if it exists."""
+    """Load calibrated waypoints from ``waypoints.json`` if it exists.
+
+    The file may also contain a ``via_table`` key for collision routing —
+    fetched separately by ``_load_via_table_from_file``.
+    """
     if not os.path.isfile(WAYPOINTS_FILE):
         return None
     try:
@@ -111,12 +115,50 @@ def _load_waypoints_from_file() -> Optional[Dict[str, Waypoint]]:
             data = json.load(f)
         waypoints = {}
         for name, entry in data.items():
+            if name == "via_table":
+                continue  # routing metadata, not a waypoint
             waypoints[name] = Waypoint(name=name, angles=entry["angles"])
         logger.info("Loaded calibrated waypoints from %s", WAYPOINTS_FILE)
         return waypoints
     except Exception as exc:
         logger.warning("Failed to load waypoints from %s: %s", WAYPOINTS_FILE, exc)
         return None
+
+
+def _load_via_table_from_file() -> Dict[tuple, List[str]]:
+    """Load the waypoint→waypoint via-routing table from ``waypoints.json``.
+
+    Format on disk:
+
+    .. code-block:: json
+
+        "via_table": [
+            {"from": "BIN_A", "to": "BIN_C", "via": ["TRANSIT_BACK_LEFT"]},
+            {"from": "BIN_C", "to": "BIN_A", "via": ["TRANSIT_BACK_LEFT"]}
+        ]
+
+    Returns a dict keyed by ``(from, to)`` for O(1) lookup. Empty when the
+    file is missing or the key is absent (default = no routing).
+    """
+    if not os.path.isfile(WAYPOINTS_FILE):
+        return {}
+    try:
+        with open(WAYPOINTS_FILE) as f:
+            data = json.load(f)
+        entries = data.get("via_table", [])
+        table: Dict[tuple, List[str]] = {}
+        for entry in entries:
+            src = entry.get("from")
+            dst = entry.get("to")
+            via = entry.get("via", [])
+            if src and dst and isinstance(via, list):
+                table[(src, dst)] = list(via)
+        if table:
+            logger.info("Loaded %d via-routing entries from %s", len(table), WAYPOINTS_FILE)
+        return table
+    except Exception as exc:
+        logger.warning("Failed to load via_table from %s: %s", WAYPOINTS_FILE, exc)
+        return {}
 
 
 class Arm:
@@ -127,12 +169,16 @@ class Arm:
         port: str = "/dev/ttyUSB0",
         baud: int = 115200,
         waypoints: Optional[Dict[str, Waypoint]] = None,
+        via_table: Optional[Dict[tuple, List[str]]] = None,
         mock: bool = False,
     ) -> None:
         self._mc = get_connection(port, baud, mock=mock)
         self.mock = self._mc is None
 
         self.waypoints = waypoints or _load_waypoints_from_file() or DEFAULT_WAYPOINTS
+        self.via_table = via_table if via_table is not None else _load_via_table_from_file()
+        self._last_waypoint_name: Optional[str] = None
+
         if waypoints:
             logger.info("Using caller-supplied waypoints")
         elif self.waypoints is not DEFAULT_WAYPOINTS:
@@ -155,11 +201,37 @@ class Arm:
     MOTION_TIMEOUT = 300  # 5 minutes — effectively no timeout
 
     def go_to(self, waypoint_name: str) -> None:
-        """Move to a named waypoint. Blocks until the arm arrives."""
-        wp = self.waypoints.get(waypoint_name)
-        if wp is None:
+        """Move to a named waypoint, routing through any via-points if needed.
+
+        Consults ``self.via_table`` keyed by ``(last_waypoint, target)`` and
+        prepends each via-waypoint to avoid known static obstacles (e.g. the
+        gooseneck camera mount). If no entry exists, moves directly.
+        """
+        if waypoint_name not in self.waypoints:
             logger.error("Unknown waypoint: %s", waypoint_name)
             return
+
+        via_chain = self.via_table.get(
+            (self._last_waypoint_name, waypoint_name), []
+        ) if self._last_waypoint_name else []
+
+        if via_chain:
+            logger.info(
+                "Routing %s → %s via %s (collision avoidance)",
+                self._last_waypoint_name, waypoint_name, via_chain,
+            )
+            for via_name in via_chain:
+                if via_name not in self.waypoints:
+                    logger.warning("Via waypoint %s not calibrated — skipping", via_name)
+                    continue
+                self._move_to_waypoint(via_name)
+
+        self._move_to_waypoint(waypoint_name)
+        self._last_waypoint_name = waypoint_name
+
+    def _move_to_waypoint(self, waypoint_name: str) -> None:
+        """Direct joint-space move to a calibrated waypoint (no routing)."""
+        wp = self.waypoints[waypoint_name]
         if self.mock:
             logger.info("[MOCK] Arm → %s %s", wp.name, wp.angles)
             time.sleep(0.3)
@@ -168,7 +240,7 @@ class Arm:
             logger.info("Arm → %s angles=%s speed=%d", wp.name, wp.angles, wp.speed)
             self._mc.sync_send_angles(wp.angles, wp.speed, timeout=self.MOTION_TIMEOUT)
         except Exception as exc:
-            logger.error("Arm go_to(%s) failed: %s", wp.name, exc)
+            logger.error("Arm _move_to_waypoint(%s) failed: %s", wp.name, exc)
 
     def go_to_coords(self, coords: List[float], speed: int = 50) -> None:
         """Move to a Cartesian position. Blocks until the arm arrives."""
