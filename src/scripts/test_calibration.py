@@ -70,15 +70,20 @@ def main():
     print()
     print("Instructions:")
     print("  - Click anywhere in the camera view to see predicted robot XY")
-    print("  - Press 'm' to MOVE arm to last clicked point")
-    print("  - Press 'g' to GO to the detected block automatically")
-    print("  - Press '+'/'-' to adjust rotation offset by 1 degree")
-    print("  - Press ']'/'[' to adjust rotation offset by 5 degrees")
-    print("  - Press 'r' to read current robot coords")
-    print("  - Press 's' to release SERVOS (arm goes limp)")
-    print("  - Press 'q' to quit")
-    print()
-    print("  Quick test: place a block → press 'g' → arm goes to it")
+    print("  Testing:")
+    print("    'm' — move arm to last clicked point")
+    print("    'g' — go to detected block automatically")
+    print("    'r' — read current robot coords")
+    print("  Rotation:")
+    print("    '+'/'-' — adjust offset by 1 degree")
+    print("    ']'/'[' — adjust offset by 5 degrees")
+    print("  Calibration:")
+    print("    'c' — record current arm position as calibration point")
+    print("           (move arm to a spot, press 'c', click that spot in camera)")
+    print("    'w' — write new calibration from recorded points (need 4+)")
+    print("  Other:")
+    print("    's' — release servos")
+    print("    'q' — quit")
     print()
 
     block_detector = BlockDetector()
@@ -88,19 +93,28 @@ def main():
 
     clicked_points = []
     last_target = None
+    cal_points_robot = []   # [[x, y], ...] from robot
+    cal_points_pixel = []   # [[px, py], ...] from clicks
+    waiting_for_click = False  # True when 'c' was pressed and waiting for click
 
     def on_click(event, x, y, flags, param):
-        nonlocal last_target
+        nonlocal last_target, waiting_for_click
         if event == cv2.EVENT_LBUTTONDOWN:
             clicked_points.append((x, y))
+
+            if waiting_for_click:
+                # Recording calibration point
+                cal_points_pixel.append([x, y])
+                waiting_for_click = False
+                n = len(cal_points_robot)
+                print(f"  Calibration point {n} recorded: pixel ({x}, {y}) → robot {cal_points_robot[-1]}")
+                print(f"  Total points: {n} (need 4+ to write calibration)")
+                return
+
             target = transform.pixel_to_robot(x, y)
             last_target = target
             print(f"  Pixel ({x}, {y}) → Robot ({target.coords[0]:.1f}, {target.coords[1]:.1f}) "
                   f"dist={target.distance_from_base:.1f}mm reachable={target.reachable}")
-            if target.reachable:
-                print(f"    Press 'm' to move arm there")
-            else:
-                print(f"    WARNING: outside workspace — arm cannot reach")
 
     cv2.namedWindow("Calibration Test", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Calibration Test", 960, 720)
@@ -134,8 +148,17 @@ def main():
             cv2.putText(display, f"Detected: {detection.rotation_angle:.0f} deg | Corrected (rz): {corrected:.0f} deg | Offset: {rotation_offset:.0f}",
                         (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-        cv2.putText(display, "Click:move | +/-:rotation | R:read | S:servos | Q:quit",
-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+        # Draw recorded calibration points
+        for i, (px, py) in enumerate(cal_points_pixel):
+            cv2.circle(display, (px, py), 8, (255, 0, 255), -1)
+            cv2.putText(display, str(i+1), (px+10, py-5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 255), 1)
+
+        if waiting_for_click:
+            cv2.putText(display, "CLICK the gripper tip position now!",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            info = f"G:go | M:click-move | C:calibrate | W:write({len(cal_points_robot)}pts) | +/-:rot | Q:quit"
+            cv2.putText(display, info, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1)
 
         cv2.imshow("Calibration Test", display)
 
@@ -296,6 +319,48 @@ def main():
             except Exception:
                 pass
             print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
+        elif key == ord('c'):
+            # Record robot position, then wait for click to record pixel
+            coords = mc.get_coords()
+            if coords and len(coords) >= 2:
+                cal_points_robot.append([coords[0], coords[1]])
+                waiting_for_click = True
+                print(f"\n  Robot at ({coords[0]:.1f}, {coords[1]:.1f}) — now CLICK the gripper tip in the camera")
+            else:
+                print(f"  Could not read robot coords: {coords}")
+        elif key == ord('w'):
+            if len(cal_points_robot) < 4:
+                print(f"  Need at least 4 points, have {len(cal_points_robot)}. Press 'c' to add more.")
+            else:
+                # Compute homography and save
+                src = np.array(cal_points_pixel, dtype=np.float64)
+                dst = np.array(cal_points_robot, dtype=np.float64)
+                H, mask = cv2.findHomography(src, dst)
+
+                z_pick = transform._z_pick
+                approach = transform._approach_angles
+
+                cal_data = {
+                    "mode": "homography",
+                    "homography_matrix": H.tolist(),
+                    "z_pick_mm": z_pick,
+                    "approach_angles": approach,
+                    "num_calibration_points": len(cal_points_robot),
+                    "pixel_points": cal_points_pixel,
+                    "robot_points": cal_points_robot,
+                }
+
+                cal_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "camera_calibration.json")
+                with open(cal_file, "w") as f:
+                    json.dump(cal_data, f, indent=2)
+
+                # Reload transform
+                transform._H = np.array(H, dtype=np.float64)
+                print(f"\n  NEW CALIBRATION SAVED with {len(cal_points_robot)} points!")
+                print(f"  File: {cal_file}")
+                print(f"  Homography matrix:\n{H}")
+                print(f"  Test by clicking or pressing 'g' to verify accuracy.")
+                print()
         elif key == ord('s'):
             mc.release_all_servos()
             print("  Servos released — arm is free to move manually")
