@@ -452,13 +452,64 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
-    # Summary: show calibration points if available
+    # ── Save settings on exit ────────────────────────────────────
+    original_offset = float(os.environ.get("CAMERA_ROTATION_OFFSET", "0"))
+    changes = []
+
+    if rotation_offset != original_offset:
+        changes.append(f"CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
+
+    if changes:
+        print("\n" + "=" * 60)
+        print("  Settings changed during this session:")
+        for c in changes:
+            print(f"    {c}")
+
+        # Update .env file
+        env_file = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+        if os.path.isfile(env_file):
+            with open(env_file) as f:
+                env_lines = f.readlines()
+
+            updated = set()
+            new_lines = []
+            for line in env_lines:
+                replaced = False
+                for change in changes:
+                    key = change.split("=")[0]
+                    if line.strip().startswith(key + "=") or line.strip().startswith("# " + key):
+                        new_lines.append(change + "\n")
+                        updated.add(key)
+                        replaced = True
+                        break
+                if not replaced:
+                    new_lines.append(line)
+
+            # Append any keys not found in .env
+            for change in changes:
+                key = change.split("=")[0]
+                if key not in updated:
+                    new_lines.append("\n" + change + "\n")
+
+            with open(env_file, "w") as f:
+                f.writelines(new_lines)
+            print(f"\n  Updated {env_file}")
+        else:
+            print(f"\n  No .env file found — add these manually:")
+            for c in changes:
+                print(f"    {c}")
+
+        print("=" * 60)
+    else:
+        print("\n  No settings changed.")
+
+    # Summary: show calibration points
     cal_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "camera_calibration.json")
     if os.path.isfile(cal_file):
         with open(cal_file) as f:
             cal = json.load(f)
         if "pixel_points" in cal and "robot_points" in cal:
-            print("\n  Calibration points used:")
+            print(f"\n  Camera calibration: {len(cal['pixel_points'])} points")
             for i, (px, ry) in enumerate(zip(cal["pixel_points"], cal["robot_points"])):
                 print(f"    {i+1}. Pixel {px} → Robot {ry}")
 
