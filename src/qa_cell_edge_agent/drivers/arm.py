@@ -297,9 +297,12 @@ class Arm:
 
         # 7. Move to bin via SAFE_ABOVE
         self._go_safe(bin_name)
+        time.sleep(1.0)  # settle before releasing
 
         # 8. Release
+        logger.info("Releasing at %s", bin_name)
         gripper.release()
+        time.sleep(0.5)  # let block fall
 
         # 9. HOME via SAFE_ABOVE
         self._go_safe("HOME")
