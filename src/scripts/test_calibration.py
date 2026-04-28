@@ -72,7 +72,8 @@ def main():
     print("  - Click anywhere in the camera view to see predicted robot XY")
     print("  - Press 'm' to MOVE arm to last clicked point")
     print("  - Press 'g' to GO to the detected block automatically")
-    print("  - Press '+'/'-' to adjust CAMERA_ROTATION_OFFSET by 5 degrees")
+    print("  - Press '+'/'-' to adjust rotation offset by 1 degree")
+    print("  - Press ']'/'[' to adjust rotation offset by 5 degrees")
     print("  - Press 'r' to read current robot coords")
     print("  - Press 's' to release SERVOS (arm goes limp)")
     print("  - Press 'q' to quit")
@@ -258,8 +259,14 @@ def main():
                     print()
             else:
                 print("  No block detected — place a block in the zone first")
-        elif key == ord('+') or key == ord('='):
+        elif key == ord(']'):
             rotation_offset += 5
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (+5)")
+        elif key == ord('['):
+            rotation_offset -= 5
+            print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (-5)")
+        elif key == ord('+') or key == ord('='):
+            rotation_offset += 1
             print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}°")
             # If arm is at a position, rotate J6 to preview the new angle
             try:
@@ -275,7 +282,7 @@ def main():
                 pass
             print(f"  Set in .env: CAMERA_ROTATION_OFFSET={rotation_offset:.0f}")
         elif key == ord('-'):
-            rotation_offset -= 5
+            rotation_offset -= 1
             print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}°")
             try:
                 current = mc.get_angles()
