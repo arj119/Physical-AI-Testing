@@ -126,7 +126,19 @@ def main():
                 z = transform._z_pick
                 rx, ry, rz = transform._approach_angles
                 move_coords = [x, y, z, rx, ry, rz]
-                print(f"\n  Moving arm to ({x:.1f}, {y:.1f}, z={z:.1f})...")
+
+                # Go to SAFE_ABOVE first to avoid hitting the surface
+                import json as _json
+                wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
+                if os.path.isfile(wp_file):
+                    with open(wp_file) as _f:
+                        _wp = _json.load(_f)
+                    if "SAFE_ABOVE" in _wp:
+                        print(f"\n  Moving to SAFE_ABOVE first...")
+                        mc.send_angles(_wp["SAFE_ABOVE"]["angles"], 30)
+                        time.sleep(3)
+
+                print(f"  Moving arm to ({x:.1f}, {y:.1f}, z={z:.1f})...")
                 mc.send_coords(move_coords, 30, 0)
                 # Wait for arrival
                 deadline = time.time() + 15
