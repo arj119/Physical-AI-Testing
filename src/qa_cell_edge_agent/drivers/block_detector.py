@@ -17,6 +17,8 @@ from typing import List, Optional
 
 import numpy as np
 
+from qa_cell_edge_agent.drivers.orientation import minarearect_yaw
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -144,15 +146,12 @@ class BlockDetector:
         best_contour, best_area = max(valid, key=lambda x: x[1])
         x, y, w, h = cv2.boundingRect(best_contour)
 
-        # Rotated bounding rectangle for orientation
-        rot_rect = cv2.minAreaRect(best_contour)  # ((cx,cy), (w,h), angle)
-        raw_angle = rot_rect[2]
-        # Normalize to [-45, 45] for square objects (90° symmetry)
-        angle = raw_angle
-        if angle < -45:
-            angle += 90
-        elif angle > 45:
-            angle -= 90
+        # Rotated bounding rectangle for orientation (90° symmetry normalised)
+        oriented = minarearect_yaw(best_contour)
+        if oriented is None:
+            return None
+        angle = oriented.yaw_deg
+        rot_rect = (oriented.centre, oriented.size, angle)
 
         # Classify by dominant color in the bounding box
         roi_hsv = hsv[y:y+h, x:x+w]
@@ -165,7 +164,7 @@ class BlockDetector:
             bounding_box=[float(x), float(y), float(w), float(h)],
             dominant_color=color_name,
             contour_area=float(best_area),
-            rotation_angle=round(angle, 1),
+            rotation_angle=angle,
             rotated_bbox=rot_rect,
         )
 
