@@ -25,10 +25,11 @@ from foundry_sdk_runtime.types.null_types import Empty
 
 from qa_cell_edge_agent.config.settings import Settings
 from qa_cell_edge_agent.config.foundry import FoundryClients
-from qa_cell_edge_agent.drivers.arm import Arm
+from qa_cell_edge_agent.drivers.arm import Arm, resolve_bin_name
 from qa_cell_edge_agent.drivers.block_detector import BlockDetector
 from qa_cell_edge_agent.drivers.gripper import Gripper
 from qa_cell_edge_agent.drivers.orientation import estimate_yaw_in_bbox
+from qa_cell_edge_agent.drivers.pose_buffer import PoseBuffer
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
 from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
 from qa_cell_edge_agent.drivers.arm import DECISION_TO_BIN
@@ -93,6 +94,11 @@ def run_defect_detection(
     cam_transform = CameraTransform()
     workspace = WorkspaceMonitor()
     block_detector = BlockDetector()
+    pose_buffer = PoseBuffer(
+        n=settings.pose_buffer_n,
+        xy_tol_mm=settings.pose_buffer_xy_tol_mm,
+        yaw_tol_deg=settings.pose_buffer_yaw_tol_deg,
+    )
     state = RobotState()
     _stable_since: Optional[float] = None
     _stable_bbox: Optional[list] = None
@@ -158,6 +164,7 @@ def run_defect_detection(
             cycle_start = time.monotonic()
 
             frame = item["frame"]
+            detection = None  # populated only by the colour path
 
             # ══════════════════════════════════════════════════════
             # DETECTION — either color-based or model-based
@@ -271,18 +278,50 @@ def run_defect_detection(
 
             fusion_result = FusionResult(decision=decision, reason=reason, vision_agrees=True)
 
+            # ── Resolve target bin (colour-mapping takes precedence) ─
+            dominant_color = None
+            if settings.detection_mode == "color" and detection is not None:
+                dominant_color = detection.dominant_color
+            target_bin = resolve_bin_name(decision, dominant_color)
+
             # ── Sort part ─────────────────────────────────────────
             no_pick = sensor_state.get("no_pick", False)
+            pick_outcome = None
             if no_pick:
-                bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
-                logger.info("No-pick: %s → %s", detected_class, bin_name)
-                arm.go_to(bin_name)
+                logger.info("No-pick: %s → %s", detected_class, target_bin)
+                arm.go_to(target_bin)
                 arm.go_to("HOME")
             else:
-                arm.pick_and_place(
-                    decision, gripper, pick_target,
-                    rotation_angle=rotation_angle,
+                # redetect_cb: re-run detection on a fresh frame and return
+                # (PickTarget, yaw_deg) or None so the retry path can refresh
+                # its target after the arm has parked at SCOUT.
+                redetect_cb = _make_redetect_cb(
+                    sensor_queue, model, block_detector, cam_transform,
+                    workspace, settings, logger,
                 )
+                pick_outcome = arm.pick_and_place(
+                    decision,
+                    gripper,
+                    pick_target,
+                    rotation_angle=rotation_angle,
+                    bin_override=target_bin,
+                    redetect_cb=redetect_cb,
+                )
+
+                # On exhausted retries the part stays on the workspace —
+                # downgrade the decision to REVIEW so Foundry shows it as
+                # needing operator attention.
+                if not pick_outcome.success:
+                    decision = "REVIEW"
+                    reason = (
+                        f"{reason}+pick_failed_after_{pick_outcome.attempts}_attempts"
+                    )
+                    fusion_result = FusionResult(
+                        decision=decision, reason=reason, vision_agrees=True,
+                    )
+
+                # Reset pose buffer between cycles
+                pose_buffer.reset()
 
             # Drain stale frames that accumulated while arm was moving
             drained = 0
@@ -347,14 +386,28 @@ def run_defect_detection(
             sensor_state["grip_state"] = grip_data.grip_state
             sensor_state["object_detected"] = grip_data.object_detected
 
+            # Closed-loop pick metrics — surface for telemetry / dashboards.
+            # These don't go through the OSDK action (would require schema
+            # change) but are streamed via shared state and logged.
+            if pick_outcome is not None:
+                sensor_state["pick_attempts"] = pick_outcome.attempts
+                sensor_state["grasp_load_after_pick"] = pick_outcome.last_load
+                sensor_state["pick_success"] = pick_outcome.success
+                sensor_state["pick_total_time_s"] = pick_outcome.total_time_s
+
             state.total_inspections += 1
+            attempt_suffix = (
+                f" attempts={pick_outcome.attempts} load={pick_outcome.last_load:.3f}"
+                if pick_outcome is not None else ""
+            )
             logger.info(
-                "Inspection #%d: %s (conf=%.2f) → %s [%dms]",
+                "Inspection #%d: %s (conf=%.2f) → %s [%dms]%s",
                 state.total_inspections,
                 detected_class,
                 confidence,
                 decision,
                 cycle_time_ms,
+                attempt_suffix,
             )
 
         except Exception:
@@ -452,6 +505,73 @@ def _send_heartbeat(
         )
     except Exception as exc:
         logger.error("Heartbeat failed: %s", exc)
+
+
+def _make_redetect_cb(
+    sensor_queue,
+    model,
+    block_detector,
+    cam_transform,
+    workspace,
+    settings,
+    log,
+):
+    """Build a redetect callback for the closed-loop pick retry path.
+
+    On invocation, drains stale frames from the queue, takes the next fresh
+    frame, runs the active detector (colour or model), transforms the
+    bbox centre into robot coords, and returns ``(PickTarget, yaw_deg)``
+    or ``None`` if no valid detection is found within ``timeout_s``.
+    """
+
+    def cb():
+        if not cam_transform.is_calibrated:
+            return None
+
+        # Drain stale frames so we get the latest workspace state
+        latest_frame = None
+        while True:
+            try:
+                latest_frame = sensor_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # If the queue was empty, block briefly for a fresh frame
+        if latest_frame is None:
+            try:
+                latest_frame = sensor_queue.get(timeout=2.0)
+            except queue.Empty:
+                log.warning("redetect_cb: no fresh frame within 2s")
+                return None
+
+        frame = latest_frame["frame"]
+
+        if settings.detection_mode == "color":
+            zone_mask = workspace._zone_mask if workspace.is_configured else None
+            det = block_detector.detect(frame, zone_mask=zone_mask)
+            if det is None:
+                return None
+            bbox = det.bounding_box
+            yaw = float(det.rotation_angle)
+        else:
+            inference_frame = workspace.mask_frame(frame) if workspace.is_configured else frame
+            result = model.infer(inference_frame)
+            if result.confidence < 0.25 or result.bounding_box == [0.0, 0.0, 0.0, 0.0]:
+                return None
+            bbox = result.bounding_box
+            from qa_cell_edge_agent.drivers.orientation import estimate_yaw_in_bbox as _est
+            oriented = _est(frame, bbox)
+            yaw = oriented.yaw_deg if oriented is not None else 0.0
+
+        try:
+            cx = int(bbox[0] + bbox[2] / 2)
+            cy = int(bbox[1] + bbox[3] / 2)
+            target = cam_transform.pixel_to_robot(cx, cy)
+        except (IndexError, TypeError):
+            return None
+        return target, yaw
+
+    return cb
 
 
 def _bbox_moved(prev: list, curr: list, threshold: float = 20.0) -> bool:
