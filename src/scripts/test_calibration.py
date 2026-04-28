@@ -70,13 +70,14 @@ def main():
     print()
     print("Instructions:")
     print("  - Click anywhere in the camera view to see predicted robot XY")
-    print("  - Press 'm' to MOVE the arm to the last clicked point")
+    print("  - Press 'm' to MOVE arm to last clicked point")
+    print("  - Press 'g' to GO to the detected block automatically")
     print("  - Press '+'/'-' to adjust CAMERA_ROTATION_OFFSET by 5 degrees")
     print("  - Press 'r' to read current robot coords")
-    print("  - Press 's' to release SERVOS (arm goes limp for manual positioning)")
+    print("  - Press 's' to release SERVOS (arm goes limp)")
     print("  - Press 'q' to quit")
     print()
-    print("  Workflow: click a spot → press 'm' → check if gripper goes there")
+    print("  Quick test: place a block → press 'g' → arm goes to it")
     print()
 
     block_detector = BlockDetector()
@@ -201,6 +202,62 @@ def main():
                 print(f"  Cannot move — target is outside workspace")
             else:
                 print(f"  Click a point first, then press 'm'")
+        elif key == ord('g'):
+            if detection is not None:
+                bbox = detection.bounding_box
+                px = int(bbox[0] + bbox[2] / 2)
+                py = int(bbox[1] + bbox[3] / 2)
+                target = transform.pixel_to_robot(px, py)
+
+                if not target.reachable:
+                    print(f"  Block at pixel ({px}, {py}) → robot ({target.coords[0]:.1f}, {target.coords[1]:.1f}) — UNREACHABLE")
+                else:
+                    x, y = target.coords[0], target.coords[1]
+                    z = transform._z_pick
+                    rx, ry, rz = transform._approach_angles
+                    grip_rz = detection.rotation_angle + rotation_offset
+                    approach_z = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
+
+                    print(f"\n  Block: {detection.dominant_color} at pixel ({px}, {py})")
+                    print(f"  → Robot ({x:.1f}, {y:.1f}) rz={grip_rz:.1f}°")
+
+                    import json as _json
+                    wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
+
+                    # 1. SAFE_ABOVE
+                    if os.path.isfile(wp_file):
+                        with open(wp_file) as _f:
+                            _wp = _json.load(_f)
+                        if "SAFE_ABOVE" in _wp:
+                            print(f"  Step 1: SAFE_ABOVE...")
+                            mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
+
+                    # 2. Approach above
+                    print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
+                    approach_coords = [x, y, approach_z, rx, ry, grip_rz]
+                    mc.send_coords(approach_coords, 40, 0)
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        if mc.is_in_position(approach_coords, 1) == 1:
+                            break
+                        time.sleep(0.1)
+
+                    # 3. Descend
+                    move_coords = [x, y, z, rx, ry, grip_rz]
+                    print(f"  Step 3: Descend to z={z:.0f}...")
+                    mc.send_coords(move_coords, 25, 0)
+                    deadline = time.time() + 10
+                    while time.time() < deadline:
+                        if mc.is_in_position(move_coords, 1) == 1:
+                            break
+                        time.sleep(0.1)
+
+                    actual = mc.get_coords()
+                    if actual and len(actual) >= 3:
+                        print(f"  Arrived: x={actual[0]:.1f}, y={actual[1]:.1f}, z={actual[2]:.1f}")
+                    print()
+            else:
+                print("  No block detected — place a block in the zone first")
         elif key == ord('+') or key == ord('='):
             rotation_offset += 5
             print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}° (increased)")
