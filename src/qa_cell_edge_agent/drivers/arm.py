@@ -231,16 +231,29 @@ class Arm:
 
         if pick_target and pick_target.reachable:
             x, y = pick_target.coords[0], pick_target.coords[1]
+            rx, ry = pick_target.coords[3], pick_target.coords[4]
             rz = rotation_angle + CAMERA_ROTATION_OFFSET
 
-            logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f°", x, y, rz)
+            logger.info("Dynamic pick at (%.1f, %.1f) rx=%.1f ry=%.1f rz=%.1f°", x, y, rx, ry, rz)
 
-            # 2. Go to SAFE_ABOVE before approaching (clears camera)
+            # 2. Lift from current position first (avoid low arcs)
+            if not self.mock and self._mc:
+                current_coords = self._mc.get_coords()
+                if current_coords and len(current_coords) == 6:
+                    lift_z = self.APPROACH_HEIGHT_MM + 40
+                    self._mc.send_coords(
+                        [current_coords[0], current_coords[1], lift_z,
+                         current_coords[3], current_coords[4], current_coords[5]],
+                        30, 0,
+                    )
+                    time.sleep(2)
+
+            # 3. Go to SAFE_ABOVE (clears camera)
             if "SAFE_ABOVE" in self.waypoints:
                 self.go_to("SAFE_ABOVE")
 
-            # 3. Approach above target
-            approach = [x, y, self.APPROACH_HEIGHT_MM, self.PICK_RX, self.PICK_RY, rz]
+            # 4. Approach above target (using rx/ry from calibration)
+            approach = [x, y, self.APPROACH_HEIGHT_MM, rx, ry, rz]
             reached = self._send_coords_and_wait(approach, speed=40)
             if not reached:
                 logger.warning("Could not reach approach — falling back to fixed PICK")
@@ -252,8 +265,8 @@ class Arm:
                 self._go_safe("HOME")
                 return
 
-            # 4. Descend to grip height
-            grip_pos = [x, y, self.GRIP_HEIGHT_MM, self.PICK_RX, self.PICK_RY, rz]
+            # 5. Descend to grip height
+            grip_pos = [x, y, self.GRIP_HEIGHT_MM, rx, ry, rz]
             self._send_coords_and_wait(grip_pos, speed=25)
 
             # 5. Close gripper
