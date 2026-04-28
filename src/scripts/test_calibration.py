@@ -248,17 +248,27 @@ def main():
                     import json as _json
                     wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
 
-                    # 1. SAFE_ABOVE
+                    # 1. Lift to current position's Z at safe height first
+                    current_coords = mc.get_coords()
+                    if current_coords and len(current_coords) == 6:
+                        lift_z = approach_z + 40  # extra clearance
+                        lift_coords = [current_coords[0], current_coords[1], lift_z,
+                                       current_coords[3], current_coords[4], current_coords[5]]
+                        print(f"  Step 1: Lifting to z={lift_z:.0f}...")
+                        mc.send_coords(lift_coords, 30, 0)
+                        time.sleep(2)
+
+                    # 2. SAFE_ABOVE
                     if os.path.isfile(wp_file):
                         with open(wp_file) as _f:
                             _wp = _json.load(_f)
                         if "SAFE_ABOVE" in _wp:
-                            print(f"  Step 1: SAFE_ABOVE...")
+                            print(f"  Step 2: SAFE_ABOVE...")
                             mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
 
-                    # 2. Approach above
-                    print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
+                    # 3. Approach above target
                     approach_coords = [x, y, approach_z, rx, ry, grip_rz]
+                    print(f"  Step 3: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f}) rz={grip_rz:.0f}°...")
                     mc.send_coords(approach_coords, 40, 0)
                     deadline = time.time() + 10
                     while time.time() < deadline:
@@ -266,15 +276,64 @@ def main():
                             break
                         time.sleep(0.1)
 
-                    # 3. Descend
-                    move_coords = [x, y, z, rx, ry, grip_rz]
-                    print(f"  Step 3: Descend to z={z:.0f}...")
-                    mc.send_coords(move_coords, 25, 0)
-                    deadline = time.time() + 10
-                    while time.time() < deadline:
-                        if mc.is_in_position(move_coords, 1) == 1:
+                    print(f"  PAUSED above target. Adjust rotation with +/-, then press 'd' to descend")
+                    print(f"  (or 'q' to abort)")
+
+                    # Wait for user to press 'd' to descend
+                    while True:
+                        ret2, frame2 = cap.read()
+                        if ret2:
+                            disp2 = frame2.copy()
+                            cv2.putText(disp2, "ABOVE TARGET — press 'd' to descend, +/- to rotate",
+                                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                            cv2.putText(disp2, f"rz={grip_rz:.0f} (offset={rotation_offset:.0f})",
+                                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                            cv2.imshow("Calibration Test", disp2)
+
+                        k = cv2.waitKey(1) & 0xFF
+                        if k == ord('d'):
                             break
-                        time.sleep(0.1)
+                        elif k == ord('q'):
+                            print("  Aborted descent")
+                            break
+                        elif k == ord('+') or k == ord('='):
+                            rotation_offset += 1
+                            grip_rz = detection.rotation_angle + rotation_offset
+                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
+                            mc.send_coords(adj_coords, 20, 0)
+                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                        elif k == ord('-'):
+                            rotation_offset -= 1
+                            grip_rz = detection.rotation_angle + rotation_offset
+                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
+                            mc.send_coords(adj_coords, 20, 0)
+                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                        elif k == ord(']'):
+                            rotation_offset += 5
+                            grip_rz = detection.rotation_angle + rotation_offset
+                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
+                            mc.send_coords(adj_coords, 20, 0)
+                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                        elif k == ord('['):
+                            rotation_offset -= 5
+                            grip_rz = detection.rotation_angle + rotation_offset
+                            adj_coords = [x, y, approach_z, rx, ry, grip_rz]
+                            mc.send_coords(adj_coords, 20, 0)
+                            print(f"  offset={rotation_offset:.0f}° rz={grip_rz:.0f}°")
+                    else:
+                        # Only descend if 'd' was pressed (not 'q')
+                        pass
+
+                    if k == ord('d'):
+                        # 4. Descend
+                        move_coords = [x, y, z, rx, ry, grip_rz]
+                        print(f"  Step 4: Descending to z={z:.0f}...")
+                        mc.send_coords(move_coords, 25, 0)
+                        deadline = time.time() + 10
+                        while time.time() < deadline:
+                            if mc.is_in_position(move_coords, 1) == 1:
+                                break
+                            time.sleep(0.1)
 
                     actual = mc.get_coords()
                     if actual and len(actual) >= 3:
