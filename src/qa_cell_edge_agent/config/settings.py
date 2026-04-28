@@ -92,6 +92,13 @@ class Settings:
     )
     model_staging_dir: str = "./models/staging/"
 
+    # ── Detection mode ───────────────────────────────────────────────
+    # "color" = HSV block detection (no model needed, sorts by color)
+    # "model" = YOLOv5 inference + sensor fusion (needs trained model)
+    detection_mode: str = field(
+        default_factory=lambda: os.environ.get("DETECTION_MODE", "color")
+    )
+
     # ── Hardware ──────────────────────────────────────────────────────
     mycobot_port: str = field(
         default_factory=lambda: find_mycobot_port() or "/dev/ttyUSB0",

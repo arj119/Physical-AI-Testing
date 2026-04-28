@@ -30,10 +30,18 @@ from qa_cell_edge_agent.drivers.block_detector import BlockDetector
 from qa_cell_edge_agent.drivers.gripper import Gripper
 from qa_cell_edge_agent.drivers.transforms import CameraTransform
 from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
-from qa_cell_edge_agent.fusion.engine import FusionEngine
+from qa_cell_edge_agent.drivers.arm import DECISION_TO_BIN
+from qa_cell_edge_agent.fusion.engine import FusionEngine, FusionResult
 from qa_cell_edge_agent.models.inference import ModelInference
 
 logger = logging.getLogger(__name__)
+
+# Color class → sorting decision (used in "color" detection mode)
+CLASS_TO_DECISION = {
+    "widget_good": "PASS",
+    "widget_defect": "FAIL",
+    "widget_unknown": "REVIEW",
+}
 
 
 class RobotState:
@@ -150,95 +158,120 @@ def run_defect_detection(
 
             frame = item["frame"]
 
-            # ── Detect colored block in pick zone ─────────────────
-            zone_mask = workspace._zone_mask if workspace.is_configured else None
-            detection = block_detector.detect(frame, zone_mask=zone_mask)
+            # ══════════════════════════════════════════════════════
+            # DETECTION — either color-based or model-based
+            # ══════════════════════════════════════════════════════
 
-            if detection is None:
-                _stable_since = None
-                _stable_bbox = None
-                continue
+            if settings.detection_mode == "color":
+                # ── Color detection: HSV block detector ────────────
+                zone_mask = workspace._zone_mask if workspace.is_configured else None
+                detection = block_detector.detect(frame, zone_mask=zone_mask)
 
-            # Verify detection center is inside workspace zone
-            if workspace.is_configured and workspace.roi_bbox:
-                bbox = detection.bounding_box
-                cx = bbox[0] + bbox[2] / 2
-                cy = bbox[1] + bbox[3] / 2
-                x_min, y_min, x_max, y_max = workspace.roi_bbox
-                if not (x_min <= cx <= x_max and y_min <= cy <= y_max):
-                    logger.debug("Detection outside zone (%.0f, %.0f) — skipping", cx, cy)
+                if detection is None:
                     _stable_since = None
                     _stable_bbox = None
                     continue
 
-            # ── Wait for block to settle ─────────────────────────
-            bbox = detection.bounding_box
-            if _stable_bbox is None or _bbox_moved(_stable_bbox, bbox):
-                _stable_bbox = bbox
-                _stable_since = time.monotonic()
-                logger.debug("Block moving (%s) — waiting to settle", detection.dominant_color)
-                continue
+                # Verify center is inside workspace zone
+                if workspace.is_configured and workspace.roi_bbox:
+                    cx = detection.bounding_box[0] + detection.bounding_box[2] / 2
+                    cy = detection.bounding_box[1] + detection.bounding_box[3] / 2
+                    x_min, y_min, x_max, y_max = workspace.roi_bbox
+                    if not (x_min <= cx <= x_max and y_min <= cy <= y_max):
+                        _stable_since = None
+                        _stable_bbox = None
+                        continue
 
-            if time.monotonic() - _stable_since < SETTLE_SECS:
-                continue
+                # Wait for block to settle
+                if _stable_bbox is None or _bbox_moved(_stable_bbox, detection.bounding_box):
+                    _stable_bbox = detection.bounding_box
+                    _stable_since = time.monotonic()
+                    continue
+                if time.monotonic() - _stable_since < SETTLE_SECS:
+                    continue
 
-            logger.info(
-                "Block settled: %s (%s, conf=%.2f, area=%.0f) — acting",
-                detection.detected_class, detection.dominant_color,
-                detection.confidence, detection.contour_area,
-            )
-            _stable_since = None
-            _stable_bbox = None
+                logger.info(
+                    "Block: %s (%s, area=%.0f)",
+                    detection.detected_class, detection.dominant_color, detection.contour_area,
+                )
+                _stable_since = None
+                _stable_bbox = None
 
-            # ── Read gripper ──────────────────────────────────────
+                detected_class = detection.detected_class
+                confidence = detection.confidence
+                bounding_box = detection.bounding_box
+                rotation_angle = detection.rotation_angle
+
+                # Decision directly from color
+                decision = CLASS_TO_DECISION.get(detected_class, "REVIEW")
+                reason = f"color_{detection.dominant_color}"
+
+            else:
+                # ── Model detection: YOLOv5 inference + fusion ─────
+                inference_frame = workspace.mask_frame(frame) if workspace.is_configured else frame
+                result = model.infer(inference_frame)
+
+                if result.confidence < 0.25 or result.bounding_box == [0.0, 0.0, 0.0, 0.0]:
+                    _stable_since = None
+                    _stable_bbox = None
+                    continue
+
+                # Wait for detection to settle
+                if _stable_bbox is None or _bbox_moved(_stable_bbox, result.bounding_box):
+                    _stable_bbox = result.bounding_box
+                    _stable_since = time.monotonic()
+                    continue
+                if time.monotonic() - _stable_since < SETTLE_SECS:
+                    continue
+
+                _stable_since = None
+                _stable_bbox = None
+
+                detected_class = result.detected_class
+                confidence = result.confidence
+                bounding_box = result.bounding_box
+                rotation_angle = 0.0
+
+                # Decision from sensor fusion
+                grip_data_for_fusion = gripper.read()
+                fusion_result = fusion.decide(
+                    vision_class=detected_class,
+                    confidence=confidence,
+                    normalized_load=grip_data_for_fusion.normalized_load,
+                )
+                decision = fusion_result.decision
+                reason = fusion_result.reason
+
+            # ══════════════════════════════════════════════════════
+            # COMMON: gripper read, pick target, arm, Foundry push
+            # ══════════════════════════════════════════════════════
+
             grip_data = gripper.read()
 
-            # ── Use block detection as the inference result ───────
-            result = detection
-
-            # ── Compute dynamic pick target from bounding box ─────
+            # Compute pick target from bounding box
             pick_target = None
-            if cam_transform.is_calibrated and result.bounding_box:
+            if cam_transform.is_calibrated and bounding_box:
                 try:
-                    bbox = result.bounding_box
-                    cx = int(bbox[0] + bbox[2] / 2)
-                    cy = int(bbox[1] + bbox[3] / 2)
+                    cx = int(bounding_box[0] + bounding_box[2] / 2)
+                    cy = int(bounding_box[1] + bounding_box[3] / 2)
                     pick_target = cam_transform.pixel_to_robot(cx, cy)
                 except (IndexError, TypeError) as exc:
                     logger.warning("Could not compute pick target: %s", exc)
 
-            # ── Decision from color classification ────────────────
-            _CLASS_TO_DECISION = {
-                "widget_good": "PASS",
-                "widget_defect": "FAIL",
-                "widget_unknown": "REVIEW",
-            }
-            from qa_cell_edge_agent.fusion.engine import FusionResult
-            decision = _CLASS_TO_DECISION.get(result.detected_class, "REVIEW")
-            fusion_result = FusionResult(
-                decision=decision,
-                reason=f"color_{result.dominant_color}",
-                vision_agrees=True,
-            )
+            fusion_result = FusionResult(decision=decision, reason=reason, vision_agrees=True)
 
-            # ── Sort part (blocks until arm returns HOME) ─────────
-            _arm_busy = True
+            # ── Sort part ─────────────────────────────────────────
             no_pick = sensor_state.get("no_pick", False)
             if no_pick:
-                # Skip physical pick — just move to bin and back
-                from qa_cell_edge_agent.drivers.arm import DECISION_TO_BIN
-                bin_name = DECISION_TO_BIN.get(fusion_result.decision, "BIN_REVIEW")
-                logger.info("No-pick mode: moving to %s (skipping pick)", bin_name)
+                bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
+                logger.info("No-pick: %s → %s", detected_class, bin_name)
                 arm.go_to(bin_name)
                 arm.go_to("HOME")
             else:
                 arm.pick_and_place(
-                    fusion_result.decision,
-                    gripper,
-                    pick_target,
-                    rotation_angle=detection.rotation_angle,
+                    decision, gripper, pick_target,
+                    rotation_angle=rotation_angle,
                 )
-            _arm_busy = False
 
             # Drain stale frames that accumulated while arm was moving
             drained = 0
@@ -274,13 +307,13 @@ def run_defect_detection(
                         inspection_id=item["inspection_id"],
                         robot_id=settings.robot_id,
                         timestamp=ts,
-                        vision_class=result.detected_class,
-                        vision_confidence=result.confidence,
+                        vision_class=detected_class,
+                        vision_confidence=confidence,
                         grip_load=grip_data.normalized_load,
-                        fusion_decision=fusion_result.decision,
-                        fusion_reason=fusion_result.reason,
-                        vision_agrees=fusion_result.vision_agrees,
-                        model_version=model.version,
+                        fusion_decision=decision,
+                        fusion_reason=reason,
+                        vision_agrees=True,
+                        model_version=model.version if settings.detection_mode == "model" else "color-v1",
                         cycle_time_ms=cycle_time_ms,
                         review_status=review_status,
                         captured_image_ref=captured_ref if captured_ref is not None else Empty.value,
@@ -294,15 +327,10 @@ def run_defect_detection(
                 except Exception as exc:
                     logger.error("Failed to create InspectionEvent: %s", exc)
             else:
-                logger.debug(
-                    "[MOCK] InspectionEvent %s → %s (%s)",
-                    item["inspection_id"],
-                    fusion_result.decision,
-                    fusion_result.reason,
-                )
+                logger.debug("[MOCK] InspectionEvent %s → %s", item["inspection_id"], decision)
 
-            # ── Update shared state with latest inference results ──
-            sensor_state["vision_confidence"] = result.confidence
+            # ── Update shared state ───────────────────────────────
+            sensor_state["vision_confidence"] = confidence
             sensor_state["grip_load"] = grip_data.normalized_load
             sensor_state["grip_servo_load"] = grip_data.servo_load
             sensor_state["grip_state"] = grip_data.grip_state
@@ -310,12 +338,11 @@ def run_defect_detection(
 
             state.total_inspections += 1
             logger.info(
-                "Inspection %s: %s (conf=%.2f, grip=%.2f) → %s [%dms]",
-                item["inspection_id"],
-                result.detected_class,
-                result.confidence,
-                grip_data.normalized_load,
-                fusion_result.decision,
+                "Inspection #%d: %s (conf=%.2f) → %s [%dms]",
+                state.total_inspections,
+                detected_class,
+                confidence,
+                decision,
                 cycle_time_ms,
             )
 

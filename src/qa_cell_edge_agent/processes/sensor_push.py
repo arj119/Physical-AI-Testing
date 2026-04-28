@@ -161,6 +161,7 @@ def _run_one_cycle(
         logger.debug("[MOCK] Would push VisionReading + GripReading + %d telemetry records", len(telemetry_records))
 
     # ── 5. Enqueue for Process 2 ──────────────────────────────────
+    import queue as _queue_mod
     try:
         queue.put_nowait({
             "inspection_id": inspection_id,
@@ -168,5 +169,5 @@ def _run_one_cycle(
             "timestamp": ts,
             "frame": frame,
         })
-    except Exception:
+    except _queue_mod.Full:
         logger.debug("Queue full — dropping frame %s", inspection_id)

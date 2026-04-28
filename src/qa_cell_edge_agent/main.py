@@ -45,7 +45,6 @@ def main() -> None:
     parser.add_argument("--mock-hardware", action="store_true", help="Mock hardware only")
     parser.add_argument("--mock-foundry", action="store_true", help="Mock Foundry only")
     parser.add_argument("--no-pick", action="store_true", help="Skip pick-and-place, just detect and sort to bin waypoint")
-    parser.add_argument("--live-view", action="store_true", help="Show camera feed (run scripts/live_view.py separately instead)")
     args = parser.parse_args()
 
     if args.mock:
@@ -66,6 +65,7 @@ def main() -> None:
     logger.info("  myCobot port:   %s @ %d", settings.mycobot_port, settings.mycobot_baud)
     logger.info("  Camera index:   %d", settings.camera_device_index)
     abs_model = os.path.abspath(settings.model_path)
+    logger.info("  Detection:      %s", settings.detection_mode)
     logger.info("  Model path:     %s", abs_model)
     logger.info("  Capture rate:   %.1f Hz", 1.0 / settings.capture_interval_sec)
     logger.info("=" * 60)
@@ -128,13 +128,6 @@ def main() -> None:
             daemon=True,
         ),
     }
-
-    if args.live_view:
-        logger.warning(
-            "NOTE: --live-view conflicts with sensor_push camera access. "
-            "Run 'python scripts/live_view.py' in a separate terminal BEFORE "
-            "starting the agent, or use --mock-hardware for the camera."
-        )
 
     for name, proc in processes.items():
         proc.start()
