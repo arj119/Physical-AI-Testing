@@ -40,12 +40,19 @@ class Waypoint:
 
 # ── Default waypoints (MUST be calibrated for your setup) ─────────
 # These are placeholder values — run calibrate_arm.py to set real ones.
+# SCOUT parks the arm fully outside the camera zone so re-detection
+# during retry sees an unobstructed workspace (eye-to-hand setup).
 DEFAULT_WAYPOINTS: Dict[str, Waypoint] = {
     "HOME":       Waypoint("HOME",       [0, 0, 0, 0, 0, 0]),
+    "SCOUT":      Waypoint("SCOUT",      [0, 30, -90, 0, -30, 0]),
     "PICK":       Waypoint("PICK",       [0, -30, -20, 0, 0, 0]),
     "BIN_PASS":   Waypoint("BIN_PASS",   [45, -30, -20, 0, 0, 0]),
     "BIN_FAIL":   Waypoint("BIN_FAIL",   [-45, -30, -20, 0, 0, 0]),
     "BIN_REVIEW": Waypoint("BIN_REVIEW", [90, -30, -20, 0, 0, 0]),
+    "BIN_A":      Waypoint("BIN_A",      [60, -30, -20, 0, 0, 0]),
+    "BIN_B":      Waypoint("BIN_B",      [30, -30, -20, 0, 0, 0]),
+    "BIN_C":      Waypoint("BIN_C",      [-30, -30, -20, 0, 0, 0]),
+    "BIN_D":      Waypoint("BIN_D",      [-60, -30, -20, 0, 0, 0]),
 }
 
 # Maps fusion decision to bin waypoint name
@@ -54,6 +61,45 @@ DECISION_TO_BIN = {
     "FAIL": "BIN_FAIL",
     "REVIEW": "BIN_REVIEW",
 }
+
+
+def _parse_class_to_bin(env_value: str) -> Dict[str, str]:
+    """Parse ``CLASS_TO_BIN`` env var of the form ``"yellow:BIN_A,green:BIN_B"``.
+
+    Empty / malformed values yield an empty mapping (colour sorting disabled,
+    falls back to ``DECISION_TO_BIN``).
+    """
+    mapping: Dict[str, str] = {}
+    if not env_value:
+        return mapping
+    for pair in env_value.split(","):
+        pair = pair.strip()
+        if not pair or ":" not in pair:
+            continue
+        key, value = pair.split(":", 1)
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            mapping[key] = value
+    return mapping
+
+
+# Maps detected dominant_color (or class) to a physical bin waypoint.
+# When set, takes precedence over DECISION_TO_BIN for the colour-sorting use case.
+# Example: CLASS_TO_BIN="yellow:BIN_A,green:BIN_B,red:BIN_C"
+CLASS_TO_BIN: Dict[str, str] = _parse_class_to_bin(os.environ.get("CLASS_TO_BIN", ""))
+
+
+def resolve_bin_name(decision: str, dominant_color: Optional[str] = None) -> str:
+    """Resolve target bin given a fusion decision and optional colour class.
+
+    ``dominant_color`` (when supplied) takes precedence via ``CLASS_TO_BIN``,
+    so a yellow cube goes to ``BIN_A`` even if the fusion decision is PASS.
+    Falls back to ``DECISION_TO_BIN[decision]``, then ``BIN_REVIEW``.
+    """
+    if dominant_color and dominant_color in CLASS_TO_BIN:
+        return CLASS_TO_BIN[dominant_color]
+    return DECISION_TO_BIN.get(decision, "BIN_REVIEW")
 
 
 def _load_waypoints_from_file() -> Optional[Dict[str, Waypoint]]:
@@ -150,6 +196,7 @@ class Arm:
         gripper: Gripper,
         pick_target: Optional[PickTarget] = None,
         rotation_angle: float = 0.0,
+        bin_override: Optional[str] = None,
     ) -> None:
         """Execute a full pick → sort cycle with approach/lift/rotation phases.
 
@@ -177,7 +224,7 @@ class Arm:
             Detected cube rotation in degrees (from camera). Applied to J6
             with CAMERA_ROTATION_OFFSET correction.
         """
-        bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
+        bin_name = bin_override or DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: decision=%s → bin=%s", decision, bin_name)
 
         self.go_to("HOME")
