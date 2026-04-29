@@ -220,7 +220,7 @@ def main():
                     time.sleep(0.1)
 
                 actual = mc.get_coords()
-                if actual and len(actual) >= 3:
+                if isinstance(actual, list) and len(actual) >= 3:
                     err_x = abs(actual[0] - x)
                     err_y = abs(actual[1] - y)
                     print(f"  Arrived: x={actual[0]:.1f}, y={actual[1]:.1f}, z={actual[2]:.1f}")
@@ -260,7 +260,7 @@ def main():
 
                     # 1. Lift to current position's Z at safe height first
                     current_coords = mc.get_coords()
-                    if current_coords and len(current_coords) == 6:
+                    if isinstance(current_coords, list) and len(current_coords) == 6:
                         lift_z = approach_z + 40  # extra clearance
                         lift_coords = [current_coords[0], current_coords[1], lift_z,
                                        current_coords[3], current_coords[4], current_coords[5]]
@@ -359,7 +359,7 @@ def main():
                             time.sleep(0.1)
 
                     actual = mc.get_coords()
-                    if actual and len(actual) >= 3:
+                    if isinstance(actual, list) and len(actual) >= 3:
                         print(f"  Arrived: x={actual[0]:.1f}, y={actual[1]:.1f}, z={actual[2]:.1f}")
                     print()
             else:
@@ -376,10 +376,10 @@ def main():
             # If arm is at a position, rotate J6 to preview the new angle
             try:
                 current = mc.get_angles()
-                if current and len(current) == 6 and detection is not None:
+                if isinstance(current, list) and len(current) == 6 and detection is not None:
                     new_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     current_coords = mc.get_coords()
-                    if current_coords and len(current_coords) == 6:
+                    if isinstance(current_coords, list) and len(current_coords) == 6:
                         current_coords[5] = new_rz
                         mc.send_coords(current_coords, 20, 0)
                         print(f"  Rotating gripper to rz={new_rz:.0f}° (preview)")
@@ -391,10 +391,10 @@ def main():
             print(f"  CAMERA_ROTATION_OFFSET = {rotation_offset:.0f}°")
             try:
                 current = mc.get_angles()
-                if current and len(current) == 6 and detection is not None:
+                if isinstance(current, list) and len(current) == 6 and detection is not None:
                     new_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     current_coords = mc.get_coords()
-                    if current_coords and len(current_coords) == 6:
+                    if isinstance(current_coords, list) and len(current_coords) == 6:
                         current_coords[5] = new_rz
                         mc.send_coords(current_coords, 20, 0)
                         print(f"  Rotating gripper to rz={new_rz:.0f}° (preview)")
@@ -404,7 +404,7 @@ def main():
         elif key == ord('c'):
             # Record robot position, then wait for click to record pixel
             coords = mc.get_coords()
-            if coords and len(coords) >= 2:
+            if isinstance(coords, list) and len(coords) >= 2:
                 cal_points_robot.append([coords[0], coords[1]])
                 waiting_for_click = True
                 print(f"\n  Robot at ({coords[0]:.1f}, {coords[1]:.1f}) — now CLICK the gripper tip in the camera")
@@ -451,7 +451,7 @@ def main():
         elif key == ord('r'):
             coords = mc.get_coords()
             angles = mc.get_angles()
-            if coords and len(coords) >= 3:
+            if isinstance(coords, list) and len(coords) >= 3:
                 print(f"\n  Robot position: x={coords[0]:.1f}, y={coords[1]:.1f}, z={coords[2]:.1f}")
                 print(f"  Robot angles: {[f'{a:.1f}' for a in angles]}")
                 print(f"  Distance from base: {(coords[0]**2 + coords[1]**2)**0.5:.1f} mm")
