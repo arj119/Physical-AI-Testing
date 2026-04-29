@@ -183,26 +183,27 @@ def main():
                 rx, ry, rz = transform._approach_angles
                 move_coords = [x, y, z, rx, ry, rz]
 
-                # Mimic the pick-and-place approach sequence
-                import json as _json
-                wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
+                # Mimic the pick-and-place approach: elevate → horizontal → descend
                 approach_z = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
+                safe_z = approach_z + 30
 
-                # 1. Go to SAFE_ABOVE
-                if os.path.isfile(wp_file):
-                    with open(wp_file) as _f:
-                        _wp = _json.load(_f)
-                    if "SAFE_ABOVE" in _wp:
-                        print(f"\n  Step 1: SAFE_ABOVE...")
-                        mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
+                # 1. Elevate at current XY
+                current_coords = mc.get_coords()
+                if isinstance(current_coords, list) and len(current_coords) == 6:
+                    if current_coords[2] < safe_z - 5:
+                        lift_coords = [current_coords[0], current_coords[1], safe_z,
+                                       current_coords[3], current_coords[4], current_coords[5]]
+                        print(f"\n  Step 1: Elevating to z={safe_z:.0f}...")
+                        mc.send_coords(lift_coords, 35, 0)
+                        time.sleep(2)
 
-                # 2. Approach above target (high Z) — use detected rotation if available
+                # 2. Approach above target (high Z)
                 grip_rz = rz
                 if detection is not None:
                     grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
-                    print(f"  Gripper rz: {grip_rz:.1f}° (detected={detection.rotation_angle:.1f} + offset={rotation_offset:.1f})")
+                    print(f"  Gripper rz: {grip_rz:.1f}°")
                 approach_coords = [x, y, approach_z, rx, ry, grip_rz]
-                print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
+                print(f"  Step 2: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
                 mc.send_coords(approach_coords, 40, 0)
                 deadline = time.time() + 10
                 while time.time() < deadline:
@@ -256,30 +257,20 @@ def main():
                     print(f"\n  Block: {detection.dominant_color} at pixel ({px}, {py})")
                     print(f"  → Robot ({x:.1f}, {y:.1f}) rz={grip_rz:.1f}°")
 
-                    import json as _json
-                    wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
-
-                    # 1. Lift to current position's Z at safe height first
+                    # 1. Elevate at current XY (straight up)
                     current_coords = mc.get_coords()
+                    safe_z = approach_z + 30
                     if isinstance(current_coords, list) and len(current_coords) == 6:
-                        lift_z = approach_z + 40  # extra clearance
-                        lift_coords = [current_coords[0], current_coords[1], lift_z,
-                                       current_coords[3], current_coords[4], current_coords[5]]
-                        print(f"  Step 1: Lifting to z={lift_z:.0f}...")
-                        mc.send_coords(lift_coords, 30, 0)
-                        time.sleep(2)
+                        if current_coords[2] < safe_z - 5:
+                            lift_coords = [current_coords[0], current_coords[1], safe_z,
+                                           current_coords[3], current_coords[4], current_coords[5]]
+                            print(f"  Step 1: Elevating to z={safe_z:.0f}...")
+                            mc.send_coords(lift_coords, 35, 0)
+                            time.sleep(2)
 
-                    # 2. SAFE_ABOVE
-                    if os.path.isfile(wp_file):
-                        with open(wp_file) as _f:
-                            _wp = _json.load(_f)
-                        if "SAFE_ABOVE" in _wp:
-                            print(f"  Step 2: SAFE_ABOVE...")
-                            mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
-
-                    # 3. Approach above target
+                    # 2. Move horizontally at safe altitude to above target
                     approach_coords = [x, y, approach_z, rx, ry, grip_rz]
-                    print(f"  Step 3: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f}) rz={grip_rz:.0f}°...")
+                    print(f"  Step 2: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f}) rz={grip_rz:.0f}°...")
                     mc.send_coords(approach_coords, 40, 0)
                     deadline = time.time() + 10
                     while time.time() < deadline:
