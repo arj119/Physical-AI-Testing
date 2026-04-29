@@ -246,9 +246,19 @@ class Arm:
         if pick_target and pick_target.reachable:
             x, y = pick_target.coords[0], pick_target.coords[1]
             rx, ry = pick_target.coords[3], pick_target.coords[4]
-            rz = rotation_angle + _get_camera_rotation_offset()
 
-            logger.info("Dynamic pick at (%.1f, %.1f) rx=%.1f ry=%.1f rz=%.1f°", x, y, rx, ry, rz)
+            # Compute gripper rotation:
+            # - Negate detected angle (overhead camera is mirrored vs robot frame)
+            # - Add offset (base alignment between camera 0° and J6 0°)
+            # - Normalize to [-45°, +45°] using 90° cube symmetry
+            offset = _get_camera_rotation_offset()
+            rz = -rotation_angle + offset
+            while rz > 45:
+                rz -= 90
+            while rz < -45:
+                rz += 90
+
+            logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f° (detected=%.1f, offset=%.1f)", x, y, rz, rotation_angle, offset)
 
             # 2. Lift from current position first (avoid low arcs)
             if not self.mock and self._mc:
