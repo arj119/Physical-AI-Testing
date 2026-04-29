@@ -181,7 +181,7 @@ class Arm:
             return
 
         current = self._mc.get_angles()
-        if not current or len(current) != 6:
+        if not isinstance(current, list) or len(current) != 6:
             logger.warning("Cannot read angles for lift — going HOME")
             self.go_to("HOME")
             return
@@ -263,7 +263,7 @@ class Arm:
             # 2. Lift from current position first (avoid low arcs)
             if not self.mock and self._mc:
                 current_coords = self._mc.get_coords()
-                if current_coords and len(current_coords) == 6:
+                if isinstance(current_coords, list) and len(current_coords) == 6:
                     lift_z = self.APPROACH_HEIGHT_MM + 40
                     self._mc.send_coords(
                         [current_coords[0], current_coords[1], lift_z,
