@@ -25,6 +25,16 @@ from qa_cell_edge_agent.drivers.block_detector import BlockDetector
 from qa_cell_edge_agent.drivers.workspace import WorkspaceMonitor
 
 
+def _compute_rz(detected_angle: float, offset: float) -> float:
+    """Compute gripper rz: negate for overhead mirror, normalize to [-45, 45]."""
+    rz = -detected_angle + offset
+    while rz > 45:
+        rz -= 90
+    while rz < -45:
+        rz += 90
+    return rz
+
+
 def main():
     load_dotenv()
     settings = Settings()
@@ -144,7 +154,7 @@ def main():
             box_points = cv2.boxPoints(detection.rotated_bbox).astype(int)
             cv2.drawContours(display, [box_points], 0, (0, 255, 0), 2)
             # Show detected angle + corrected angle
-            corrected = detection.rotation_angle + rotation_offset
+            corrected = _compute_rz(detection.rotation_angle, rotation_offset)
             cv2.putText(display, f"Detected: {detection.rotation_angle:.0f} deg | Corrected (rz): {corrected:.0f} deg | Offset: {rotation_offset:.0f}",
                         (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
@@ -188,7 +198,7 @@ def main():
                 # 2. Approach above target (high Z) — use detected rotation if available
                 grip_rz = rz
                 if detection is not None:
-                    grip_rz = detection.rotation_angle + rotation_offset
+                    grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     print(f"  Gripper rz: {grip_rz:.1f}° (detected={detection.rotation_angle:.1f} + offset={rotation_offset:.1f})")
                 approach_coords = [x, y, approach_z, rx, ry, grip_rz]
                 print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
@@ -239,7 +249,7 @@ def main():
                     x, y = target.coords[0], target.coords[1]
                     z = transform._z_pick
                     rx, ry, rz = transform._approach_angles
-                    grip_rz = detection.rotation_angle + rotation_offset
+                    grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     approach_z = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
 
                     print(f"\n  Block: {detection.dominant_color} at pixel ({px}, {py})")
@@ -301,22 +311,22 @@ def main():
                             break
                         elif k == ord('+') or k == ord('='):
                             rotation_offset += 1
-                            grip_rz = detection.rotation_angle + rotation_offset
+                            grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                             mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
                             print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord('-'):
                             rotation_offset -= 1
-                            grip_rz = detection.rotation_angle + rotation_offset
+                            grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                             mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
                             print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord(']'):
                             rotation_offset += 5
-                            grip_rz = detection.rotation_angle + rotation_offset
+                            grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                             mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
                             print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         elif k == ord('['):
                             rotation_offset -= 5
-                            grip_rz = detection.rotation_angle + rotation_offset
+                            grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                             mc.send_coords([x, y, approach_z, rx, ry, grip_rz], 20, 0)
                             print(f"  rz={grip_rz:.0f}° (offset={rotation_offset:.0f})")
                         # Arrow keys (OpenCV key codes)
@@ -367,7 +377,7 @@ def main():
             try:
                 current = mc.get_angles()
                 if current and len(current) == 6 and detection is not None:
-                    new_rz = detection.rotation_angle + rotation_offset
+                    new_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     current_coords = mc.get_coords()
                     if current_coords and len(current_coords) == 6:
                         current_coords[5] = new_rz
@@ -382,7 +392,7 @@ def main():
             try:
                 current = mc.get_angles()
                 if current and len(current) == 6 and detection is not None:
-                    new_rz = detection.rotation_angle + rotation_offset
+                    new_rz = _compute_rz(detection.rotation_angle, rotation_offset)
                     current_coords = mc.get_coords()
                     if current_coords and len(current_coords) == 6:
                         current_coords[5] = new_rz
