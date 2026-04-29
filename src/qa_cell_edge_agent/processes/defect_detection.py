@@ -265,11 +265,9 @@ def run_defect_detection(
             if no_pick:
                 bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
                 logger.info("No-pick: %s → %s", detected_class, bin_name)
-                arm._elevate_to_safe_altitude()
-                arm.go_to(bin_name)
+                arm._go_safe(bin_name)
                 time.sleep(1.0)
-                arm._elevate_to_safe_altitude()
-                arm.go_to("HOME")
+                arm._go_safe("HOME")
             else:
                 arm.pick_and_place(
                     decision, gripper, pick_target,

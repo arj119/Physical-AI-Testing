@@ -183,35 +183,26 @@ def main():
                 rx, ry, rz = transform._approach_angles
                 move_coords = [x, y, z, rx, ry, rz]
 
-                # Mimic the pick-and-place approach: elevate → horizontal → descend
+                # Mimic the pick-and-place approach sequence
+                import json as _json
+                wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
                 approach_z = float(os.environ.get("APPROACH_HEIGHT_MM", "160"))
-                safe_z = approach_z + 30
 
-                # 1. Elevate at current XY (mode=1 for straight vertical)
-                current_coords = mc.get_coords()
-                if isinstance(current_coords, list) and len(current_coords) == 6:
-                    if current_coords[2] < safe_z - 5:
-                        lift_coords = [current_coords[0], current_coords[1], safe_z,
-                                       current_coords[3], current_coords[4], current_coords[5]]
-                        print(f"\n  Step 1: Elevating to z={safe_z:.0f}...")
-                        mc.send_coords(lift_coords, 35, 1)
-                        deadline = time.time() + 10
-                        while time.time() < deadline:
-                            try:
-                                if mc.is_moving() == 0:
-                                    break
-                            except Exception:
-                                pass
-                            time.sleep(0.1)
-                        time.sleep(0.3)
+                # 1. Go to SAFE_ABOVE
+                if os.path.isfile(wp_file):
+                    with open(wp_file) as _f:
+                        _wp = _json.load(_f)
+                    if "SAFE_ABOVE" in _wp:
+                        print(f"\n  Step 1: SAFE_ABOVE...")
+                        mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
 
-                # 2. Approach above target (mode=0 for horizontal — joint interp is fine)
+                # 2. Approach above target (high Z) — use detected rotation if available
                 grip_rz = rz
                 if detection is not None:
                     grip_rz = _compute_rz(detection.rotation_angle, rotation_offset)
-                    print(f"  Gripper rz: {grip_rz:.1f}°")
+                    print(f"  Gripper rz: {grip_rz:.1f}° (detected={detection.rotation_angle:.1f} + offset={rotation_offset:.1f})")
                 approach_coords = [x, y, approach_z, rx, ry, grip_rz]
-                print(f"  Step 2: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
+                print(f"  Step 2: Approach above ({x:.1f}, {y:.1f}, z={approach_z:.0f})...")
                 mc.send_coords(approach_coords, 40, 0)
                 deadline = time.time() + 10
                 while time.time() < deadline:
@@ -219,19 +210,15 @@ def main():
                         break
                     time.sleep(0.1)
 
-                # 3. Descend to pick height (mode=1 for straight vertical)
+                # 3. Descend to pick height
                 move_coords = [x, y, z, rx, ry, grip_rz]
                 print(f"  Step 3: Descend to z={z:.0f}...")
-                mc.send_coords(move_coords, 25, 1)
+                mc.send_coords(move_coords, 25, 0)
                 deadline = time.time() + 10
                 while time.time() < deadline:
-                    try:
-                        if mc.is_moving() == 0:
-                            break
-                    except Exception:
-                        pass
+                    if mc.is_in_position(move_coords, 1) == 1:
+                        break
                     time.sleep(0.1)
-                time.sleep(0.3)
 
                 actual = mc.get_coords()
                 if isinstance(actual, list) and len(actual) >= 3:
@@ -269,26 +256,18 @@ def main():
                     print(f"\n  Block: {detection.dominant_color} at pixel ({px}, {py})")
                     print(f"  → Robot ({x:.1f}, {y:.1f}) rz={grip_rz:.1f}°")
 
-                    # 1. Elevate at current XY (mode=1 for straight vertical)
-                    current_coords = mc.get_coords()
-                    safe_z = approach_z + 30
-                    if isinstance(current_coords, list) and len(current_coords) == 6:
-                        if current_coords[2] < safe_z - 5:
-                            lift_coords = [current_coords[0], current_coords[1], safe_z,
-                                           current_coords[3], current_coords[4], current_coords[5]]
-                            print(f"  Step 1: Elevating to z={safe_z:.0f}...")
-                            mc.send_coords(lift_coords, 35, 1)
-                            deadline = time.time() + 10
-                            while time.time() < deadline:
-                                try:
-                                    if mc.is_moving() == 0:
-                                        break
-                                except Exception:
-                                    pass
-                                time.sleep(0.1)
-                            time.sleep(0.3)
+                    import json as _json
+                    wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
 
-                    # 2. Move horizontally at safe altitude to above target
+                    # 1. SAFE_ABOVE
+                    if os.path.isfile(wp_file):
+                        with open(wp_file) as _f:
+                            _wp = _json.load(_f)
+                        if "SAFE_ABOVE" in _wp:
+                            print(f"  Step 1: SAFE_ABOVE...")
+                            mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
+
+                    # 2. Approach above target
                     approach_coords = [x, y, approach_z, rx, ry, grip_rz]
                     print(f"  Step 2: Above target ({x:.1f}, {y:.1f}, z={approach_z:.0f}) rz={grip_rz:.0f}°...")
                     mc.send_coords(approach_coords, 40, 0)
@@ -360,19 +339,15 @@ def main():
                             print(f"  nudge Y- → ({x:.1f}, {y:.1f})")
 
                     if k == ord('d'):
-                        # 4. Descend (mode=1 for straight vertical)
+                        # 3. Descend
                         move_coords = [x, y, z, rx, ry, grip_rz]
-                        print(f"  Step 4: Descending to z={z:.0f}...")
-                        mc.send_coords(move_coords, 25, 1)
+                        print(f"  Step 3: Descending to z={z:.0f}...")
+                        mc.send_coords(move_coords, 25, 0)
                         deadline = time.time() + 10
                         while time.time() < deadline:
-                            try:
-                                if mc.is_moving() == 0:
-                                    break
-                            except Exception:
-                                pass
+                            if mc.is_in_position(move_coords, 1) == 1:
+                                break
                             time.sleep(0.1)
-                        time.sleep(0.3)
 
                     actual = mc.get_coords()
                     if isinstance(actual, list) and len(actual) >= 3:

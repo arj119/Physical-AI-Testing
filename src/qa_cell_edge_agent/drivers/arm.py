@@ -135,20 +135,16 @@ class Arm:
         except Exception as exc:
             logger.error("Arm go_to(%s) failed: %s", wp.name, exc)
 
-    def _send_coords_and_wait(self, coords: List[float], speed: int = 40, mode: int = 0) -> bool:
-        """Send Cartesian coords and wait for arrival. Returns True if reached.
-
-        mode=0: joint interpolation (fast, but arcs between positions)
-        mode=1: linear interpolation (straight-line Cartesian path)
-        """
+    def _send_coords_and_wait(self, coords: List[float], speed: int = 40) -> bool:
+        """Send Cartesian coords and wait for arrival. Returns True if reached."""
         if self.mock:
             logger.info("[MOCK] Arm → coords [%.1f, %.1f, %.1f]", coords[0], coords[1], coords[2])
             time.sleep(0.3)
             return True
         try:
-            logger.info("Arm → coords [%.1f, %.1f, %.1f] speed=%d mode=%d", coords[0], coords[1], coords[2], speed, mode)
-            self._mc.send_coords(coords, speed, mode)
-            time.sleep(0.5)
+            logger.info("Arm → coords [%.1f, %.1f, %.1f] speed=%d", coords[0], coords[1], coords[2], speed)
+            self._mc.send_coords(coords, speed, 0)
+            time.sleep(0.5)  # let the arm start moving before polling
 
             deadline = time.time() + self.POSITION_TIMEOUT
             while time.time() < deadline:
@@ -157,9 +153,10 @@ class Arm:
                         return True
                 except Exception:
                     pass
+                # Also check if arm stopped moving (alternative completion check)
                 try:
                     if self._mc.is_moving() == 0:
-                        time.sleep(0.3)
+                        time.sleep(0.3)  # settle
                         return True
                 except Exception:
                     pass
@@ -170,74 +167,6 @@ class Arm:
         except Exception as exc:
             logger.error("send_coords failed: %s", exc)
             return False
-
-    def _move_vertical(self, target_z: float, speed: int = 30) -> bool:
-        """Move straight up or down to target_z, keeping XY and orientation fixed.
-
-        Uses mode=1 (linear interpolation) for a true vertical path.
-        Falls back to stepped moves if mode=1 fails.
-        """
-        if self.mock:
-            logger.info("[MOCK] Arm → vertical to z=%.1f", target_z)
-            time.sleep(0.3)
-            return True
-
-        current = self._mc.get_coords()
-        if not isinstance(current, list) or len(current) != 6:
-            logger.warning("Cannot read coords for vertical move")
-            return False
-
-        if abs(current[2] - target_z) < 3:
-            return True  # already there
-
-        target = [current[0], current[1], target_z, current[3], current[4], current[5]]
-
-        # Try linear mode first (true straight line)
-        reached = self._send_coords_and_wait(target, speed=speed, mode=1)
-        if reached:
-            return True
-
-        # Fallback: stepped descent/ascent in small increments
-        logger.info("Linear move failed — using stepped vertical")
-        step_mm = 20.0
-        direction = 1 if target_z > current[2] else -1
-        z = current[2]
-        while abs(z - target_z) > step_mm:
-            z += direction * step_mm
-            step_coords = [current[0], current[1], z, current[3], current[4], current[5]]
-            self._mc.send_coords(step_coords, speed, 1)
-            time.sleep(0.8)
-
-        # Final position
-        self._mc.send_coords(target, speed, 1)
-        time.sleep(1.0)
-        return True
-
-    def _elevate_to_safe_altitude(self, rx=None, ry=None, rz=None) -> None:
-        """Raise the arm straight up to APPROACH_HEIGHT + margin at current XY."""
-        if self.mock:
-            logger.info("[MOCK] Arm → elevate to safe altitude")
-            time.sleep(0.3)
-            return
-        current = self._mc.get_coords()
-        if not isinstance(current, list) or len(current) != 6:
-            return
-        safe_z = self.APPROACH_HEIGHT_MM + 30
-        if current[2] >= safe_z - 5:
-            return  # already high enough
-
-        # Set orientation before lifting (so vertical move holds it constant)
-        if rx is not None or ry is not None or rz is not None:
-            orient_coords = [
-                current[0], current[1], current[2],
-                rx if rx is not None else current[3],
-                ry if ry is not None else current[4],
-                rz if rz is not None else current[5],
-            ]
-            self._send_coords_and_wait(orient_coords, speed=30, mode=1)
-
-        logger.info("Arm → elevate to z=%.0f", safe_z)
-        self._move_vertical(safe_z, speed=35)
 
     def _lift_via_angles(self) -> None:
         """Lift the arm using joint angles (avoids IK failures on Z moves).
@@ -310,7 +239,7 @@ class Arm:
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: %s → %s", decision, bin_name)
 
-        # 1. HOME + open gripper
+        # 1. HOME then raise to safe height
         self.go_to("HOME")
         gripper.open_gripper()
 
@@ -318,7 +247,10 @@ class Arm:
             x, y = pick_target.coords[0], pick_target.coords[1]
             rx, ry = pick_target.coords[3], pick_target.coords[4]
 
-            # Compute gripper rotation (negate for overhead mirror, normalize)
+            # Compute gripper rotation:
+            # - Negate detected angle (overhead camera is mirrored vs robot frame)
+            # - Add offset (base alignment between camera 0° and J6 0°)
+            # - Normalize to [-45°, +45°] using 90° cube symmetry
             offset = _get_camera_rotation_offset()
             rz = -rotation_angle + offset
             while rz > 45:
@@ -326,27 +258,28 @@ class Arm:
             while rz < -45:
                 rz += 90
 
-            logger.info("Pick at (%.1f, %.1f) rz=%.1f°", x, y, rz)
+            logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f° (detected=%.1f, offset=%.1f)", x, y, rz, rotation_angle, offset)
 
-            # 2. Elevate to safe altitude (straight up from current position)
-            self._elevate_to_safe_altitude(rx, ry, rz)
+            # 2. Go to SAFE_ABOVE (clears camera)
+            if "SAFE_ABOVE" in self.waypoints:
+                self.go_to("SAFE_ABOVE")
 
-            # 3. Move horizontally at safe altitude to above target
+            # 3. Approach above target (using rx/ry from calibration)
             approach = [x, y, self.APPROACH_HEIGHT_MM, rx, ry, rz]
             reached = self._send_coords_and_wait(approach, speed=40)
             if not reached:
-                logger.warning("Could not reach target — falling back to fixed PICK")
-                self.go_to("PICK")
+                logger.warning("Could not reach approach — falling back to fixed PICK")
+                self._go_safe("PICK")
                 gripper.close_gripper()
                 self._lift_via_angles()
-                self.go_to(bin_name)
-                time.sleep(1.0)
+                self._go_safe(bin_name)
                 gripper.release()
-                self.go_to("HOME")
+                self._go_safe("HOME")
                 return
 
-            # 4. Descend to grip height (straight down via linear mode)
-            self._move_vertical(self.GRIP_HEIGHT_MM, speed=25)
+            # 4. Descend to grip height
+            grip_pos = [x, y, self.GRIP_HEIGHT_MM, rx, ry, rz]
+            self._send_coords_and_wait(grip_pos, speed=25)
 
             # 5. Close gripper
             gripper.close_gripper()
@@ -356,23 +289,21 @@ class Arm:
         else:
             if pick_target and not pick_target.reachable:
                 logger.warning("Pick target unreachable — using fixed PICK")
-            self.go_to("PICK")
+            self._go_safe("PICK")
             gripper.close_gripper()
             self._lift_via_angles()
 
-        # 7. Move to bin (elevate first if needed)
-        self._elevate_to_safe_altitude()
-        self.go_to(bin_name)
-        time.sleep(1.0)
+        # 7. Move to bin via SAFE_ABOVE
+        self._go_safe(bin_name)
+        time.sleep(1.0)  # settle before releasing
 
         # 8. Release
         logger.info("Releasing at %s", bin_name)
         gripper.release()
-        time.sleep(0.5)
+        time.sleep(0.5)  # let block fall
 
-        # 9. HOME
-        self._elevate_to_safe_altitude()
-        self.go_to("HOME")
+        # 9. HOME via SAFE_ABOVE
+        self._go_safe("HOME")
 
     def safe_position(self) -> None:
         """Move to HOME and disable servos (E-STOP safe state)."""
@@ -380,4 +311,3 @@ class Arm:
         self.go_to("HOME")
         if not self.mock and self._mc:
             self._mc.release_all_servos()
-
