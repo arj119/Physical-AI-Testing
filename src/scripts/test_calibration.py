@@ -92,6 +92,7 @@ def main():
     print("           (move arm to a spot, press 'c', click that spot in camera)")
     print("    'w' — write new calibration from recorded points (need 4+)")
     print("  Other:")
+    print("    'h' — move arm to SAFE_ABOVE (home safe)")
     print("    's' — release servos")
     print("    'q' — quit")
     print()
@@ -443,6 +444,20 @@ def main():
                 print(f"  Homography matrix:\n{H}")
                 print(f"  Test by clicking or pressing 'g' to verify accuracy.")
                 print()
+        elif key == ord('h'):
+            import json as _json
+            wp_file = os.path.join(os.path.dirname(__file__), "..", "qa_cell_edge_agent", "drivers", "waypoints.json")
+            if os.path.isfile(wp_file):
+                with open(wp_file) as _f:
+                    _wp = _json.load(_f)
+                if "SAFE_ABOVE" in _wp:
+                    print("  Moving to SAFE_ABOVE...")
+                    mc.sync_send_angles(_wp["SAFE_ABOVE"]["angles"], 30, timeout=15)
+                    print("  Done.")
+                else:
+                    print("  SAFE_ABOVE waypoint not found")
+            else:
+                print("  waypoints.json not found")
         elif key == ord('s'):
             mc.release_all_servos()
             print("  Servos released — arm is free to move manually")
