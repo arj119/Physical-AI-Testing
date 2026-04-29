@@ -179,7 +179,26 @@ def main() -> None:
                 logger.info("Restarted %s (PID %d)", name, proc.pid)
         time.sleep(5)
 
-    # Shutdown — heartbeat stops, Foundry derives OFFLINE from missing heartbeats
+    # Shutdown — return arm to HOME before terminating
+    if not settings.mock_hardware:
+        logger.info("Returning arm to HOME...")
+        try:
+            from pymycobot import MyCobot280
+            mc = MyCobot280(settings.mycobot_port, settings.mycobot_baud)
+            import time as _time
+            _time.sleep(0.5)
+            import json as _json
+            wp_file = os.path.join(os.path.dirname(__file__), "drivers", "waypoints.json")
+            if os.path.isfile(wp_file):
+                with open(wp_file) as f:
+                    wp = _json.load(f)
+                if "HOME" in wp:
+                    mc.send_angles(wp["HOME"]["angles"], 25)
+                    _time.sleep(3)
+                    logger.info("Arm returned to HOME")
+        except Exception as exc:
+            logger.warning("Could not return arm to HOME: %s", exc)
+
     logger.info("Terminating child processes...")
     for name, proc in processes.items():
         proc.terminate()

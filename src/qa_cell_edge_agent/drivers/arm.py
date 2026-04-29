@@ -168,6 +168,27 @@ class Arm:
             logger.error("send_coords failed: %s", exc)
             return False
 
+    def _elevate_to_safe_altitude(self, rx=None, ry=None, rz=None) -> None:
+        """Raise the arm straight up to APPROACH_HEIGHT + margin at current XY."""
+        if self.mock:
+            logger.info("[MOCK] Arm → elevate to safe altitude")
+            time.sleep(0.3)
+            return
+        current = self._mc.get_coords()
+        if not isinstance(current, list) or len(current) != 6:
+            return
+        safe_z = self.APPROACH_HEIGHT_MM + 30
+        if current[2] >= safe_z - 5:
+            return  # already high enough
+        elevated = [
+            current[0], current[1], safe_z,
+            rx if rx is not None else current[3],
+            ry if ry is not None else current[4],
+            rz if rz is not None else current[5],
+        ]
+        logger.info("Arm → elevate to z=%.0f", safe_z)
+        self._send_coords_and_wait(elevated, speed=35)
+
     def _lift_via_angles(self) -> None:
         """Lift the arm using joint angles (avoids IK failures on Z moves).
 
@@ -239,7 +260,7 @@ class Arm:
         bin_name = DECISION_TO_BIN.get(decision, "BIN_REVIEW")
         logger.info("Pick-and-place: %s → %s", decision, bin_name)
 
-        # 1. HOME then raise to safe height
+        # 1. HOME + open gripper
         self.go_to("HOME")
         gripper.open_gripper()
 
@@ -247,10 +268,7 @@ class Arm:
             x, y = pick_target.coords[0], pick_target.coords[1]
             rx, ry = pick_target.coords[3], pick_target.coords[4]
 
-            # Compute gripper rotation:
-            # - Negate detected angle (overhead camera is mirrored vs robot frame)
-            # - Add offset (base alignment between camera 0° and J6 0°)
-            # - Normalize to [-45°, +45°] using 90° cube symmetry
+            # Compute gripper rotation (negate for overhead mirror, normalize)
             offset = _get_camera_rotation_offset()
             rz = -rotation_angle + offset
             while rz > 45:
@@ -258,38 +276,26 @@ class Arm:
             while rz < -45:
                 rz += 90
 
-            logger.info("Dynamic pick at (%.1f, %.1f) rz=%.1f° (detected=%.1f, offset=%.1f)", x, y, rz, rotation_angle, offset)
+            logger.info("Pick at (%.1f, %.1f) rz=%.1f°", x, y, rz)
 
-            # 2. Lift from current position first (avoid low arcs)
-            if not self.mock and self._mc:
-                current_coords = self._mc.get_coords()
-                if isinstance(current_coords, list) and len(current_coords) == 6:
-                    lift_z = self.APPROACH_HEIGHT_MM + 40
-                    self._mc.send_coords(
-                        [current_coords[0], current_coords[1], lift_z,
-                         current_coords[3], current_coords[4], current_coords[5]],
-                        30, 0,
-                    )
-                    time.sleep(2)
+            # 2. Elevate to safe altitude (straight up from current position)
+            self._elevate_to_safe_altitude(rx, ry, rz)
 
-            # 3. Go to SAFE_ABOVE (clears camera)
-            if "SAFE_ABOVE" in self.waypoints:
-                self.go_to("SAFE_ABOVE")
-
-            # 4. Approach above target (using rx/ry from calibration)
+            # 3. Move horizontally at safe altitude to above target
             approach = [x, y, self.APPROACH_HEIGHT_MM, rx, ry, rz]
             reached = self._send_coords_and_wait(approach, speed=40)
             if not reached:
-                logger.warning("Could not reach approach — falling back to fixed PICK")
-                self._go_safe("PICK")
+                logger.warning("Could not reach target — falling back to fixed PICK")
+                self.go_to("PICK")
                 gripper.close_gripper()
                 self._lift_via_angles()
-                self._go_safe(bin_name)
+                self.go_to(bin_name)
+                time.sleep(1.0)
                 gripper.release()
-                self._go_safe("HOME")
+                self.go_to("HOME")
                 return
 
-            # 5. Descend to grip height
+            # 4. Descend to grip height (straight down)
             grip_pos = [x, y, self.GRIP_HEIGHT_MM, rx, ry, rz]
             self._send_coords_and_wait(grip_pos, speed=25)
 
@@ -301,21 +307,23 @@ class Arm:
         else:
             if pick_target and not pick_target.reachable:
                 logger.warning("Pick target unreachable — using fixed PICK")
-            self._go_safe("PICK")
+            self.go_to("PICK")
             gripper.close_gripper()
             self._lift_via_angles()
 
-        # 7. Move to bin via SAFE_ABOVE
-        self._go_safe(bin_name)
-        time.sleep(1.0)  # settle before releasing
+        # 7. Move to bin (elevate first if needed)
+        self._elevate_to_safe_altitude()
+        self.go_to(bin_name)
+        time.sleep(1.0)
 
         # 8. Release
         logger.info("Releasing at %s", bin_name)
         gripper.release()
-        time.sleep(0.5)  # let block fall
+        time.sleep(0.5)
 
-        # 9. HOME via SAFE_ABOVE
-        self._go_safe("HOME")
+        # 9. HOME
+        self._elevate_to_safe_altitude()
+        self.go_to("HOME")
 
     def safe_position(self) -> None:
         """Move to HOME and disable servos (E-STOP safe state)."""
