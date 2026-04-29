@@ -131,7 +131,20 @@ class FoundryClients:
                     data=json.dumps(payload),
                     timeout=self.settings.stream_push_timeout_sec,
                 )
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    logger.warning(
+                        "Stream push attempt %d/%d failed for %s: HTTP %d\n"
+                        "  Response: %s\n"
+                        "  Payload sample: %s",
+                        attempt,
+                        self.settings.stream_retry_count,
+                        stream_rid,
+                        resp.status_code,
+                        resp.text[:500],
+                        json.dumps(records[0] if records else {})[:300],
+                    )
+                    time.sleep(min(2**attempt, 10))
+                    continue
                 return True
             except requests.RequestException as exc:
                 logger.warning(
