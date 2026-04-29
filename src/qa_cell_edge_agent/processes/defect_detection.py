@@ -273,7 +273,7 @@ def run_defect_detection(
                     rotation_angle=rotation_angle,
                 )
 
-            # Drain ALL stale frames + wait for fresh ones
+            # Drain ALL stale frames captured during arm motion
             drained = 0
             while True:
                 try:
@@ -282,8 +282,10 @@ def run_defect_detection(
                 except queue.Empty:
                     break
 
-            # Wait for camera buffer to flush (discard next 3 frames)
-            for _ in range(3):
+            # Wait for arm to be clear of camera view + flush camera buffer
+            # 5 frames at 1Hz = 5 seconds of fresh frames discarded
+            logger.info("Waiting for arm to clear camera view...")
+            for _ in range(5):
                 try:
                     sensor_queue.get(timeout=2.0)
                     drained += 1
@@ -291,9 +293,9 @@ def run_defect_detection(
                     break
 
             if drained:
-                logger.debug("Drained %d stale frames", drained)
+                logger.debug("Drained %d total frames", drained)
 
-            # Reset settle timer so new block must be stable for 2s
+            # Reset settle timer — next block must be stable for full 2s
             _stable_since = None
             _stable_bbox = None
 
