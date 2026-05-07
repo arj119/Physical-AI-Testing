@@ -131,7 +131,7 @@ class FoundryClients:
                     data=json.dumps(payload),
                     timeout=self.settings.stream_push_timeout_sec,
                 )
-                if resp.status_code != 200:
+                if resp.status_code not in (200, 204):
                     logger.warning(
                         "Stream push attempt %d/%d failed for %s: HTTP %d\n"
                         "  Response: %s\n"
