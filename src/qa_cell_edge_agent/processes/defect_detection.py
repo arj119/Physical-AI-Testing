@@ -164,7 +164,7 @@ def run_defect_detection(
 
             if settings.detection_mode == "color":
                 # ── Color detection: HSV block detector ────────────
-                zone_mask = workspace._zone_mask if workspace.is_configured else None
+                zone_mask = workspace.get_zone_mask(frame)
                 detection = block_detector.detect(frame, zone_mask=zone_mask)
 
                 if detection is None:
@@ -208,13 +208,23 @@ def run_defect_detection(
 
             else:
                 # ── Model detection: YOLOv5 inference + fusion ─────
-                inference_frame = workspace.mask_frame(frame) if workspace.is_configured else frame
+                inference_frame = workspace.mask_frame(frame)
                 result = model.infer(inference_frame)
 
                 if result.confidence < 0.25 or result.bounding_box == [0.0, 0.0, 0.0, 0.0]:
                     _stable_since = None
                     _stable_bbox = None
                     continue
+
+                # Verify center is inside workspace zone
+                if workspace.is_configured and workspace.roi_bbox:
+                    cx = result.bounding_box[0] + result.bounding_box[2] / 2
+                    cy = result.bounding_box[1] + result.bounding_box[3] / 2
+                    x_min, y_min, x_max, y_max = workspace.roi_bbox
+                    if not (x_min <= cx <= x_max and y_min <= cy <= y_max):
+                        _stable_since = None
+                        _stable_bbox = None
+                        continue
 
                 # Wait for detection to settle
                 if _stable_bbox is None or _bbox_moved(_stable_bbox, result.bounding_box):

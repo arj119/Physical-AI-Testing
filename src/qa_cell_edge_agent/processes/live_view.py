@@ -75,7 +75,7 @@ def run_live_view(
         display = workspace.draw_zone(display)
 
         # Detect blocks
-        zone_mask = workspace._zone_mask if workspace.is_configured else None
+        zone_mask = workspace.get_zone_mask(frame)
         detection = block_detector.detect(frame, zone_mask=zone_mask)
 
         if detection is not None:

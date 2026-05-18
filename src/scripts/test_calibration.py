@@ -148,7 +148,7 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
         # Detect block and show rotation
-        zone_mask = workspace._zone_mask if workspace.is_configured else None
+        zone_mask = workspace.get_zone_mask(frame)
         detection = block_detector.detect(frame, zone_mask=zone_mask)
         if detection is not None:
             # Draw rotated bbox

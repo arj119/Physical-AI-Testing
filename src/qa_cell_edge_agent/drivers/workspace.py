@@ -49,9 +49,25 @@ class WorkspaceMonitor:
             with open(ZONE_FILE) as f:
                 data = json.load(f)
             self._zone_points = data["points"]
-            logger.info("Loaded workspace zone: %d corners", len(self._zone_points))
+            pts = np.array(self._zone_points, dtype=np.int32)
+            x_min, y_min = pts.min(axis=0)
+            x_max, y_max = pts.max(axis=0)
+            self._roi_bbox = (int(x_min), int(y_min), int(x_max), int(y_max))
+            logger.info("Loaded workspace zone: %d corners, bbox=%s", len(self._zone_points), self._roi_bbox)
         except Exception as exc:
             logger.warning("Failed to load workspace zone: %s", exc)
+
+    def _ensure_mask(self, frame: np.ndarray) -> None:
+        """Build the zone mask if not yet created or if frame size changed."""
+        if cv2 is None or self._zone_points is None:
+            return
+        h, w = frame.shape[:2]
+        if self._zone_mask is not None and self._zone_mask.shape == (h, w):
+            return
+        self._zone_mask = np.zeros((h, w), dtype=np.uint8)
+        pts = np.array(self._zone_points, dtype=np.int32)
+        cv2.fillPoly(self._zone_mask, [pts], 255)
+        logger.info("Built zone mask for %dx%d frame", w, h)
 
     @property
     def is_configured(self) -> bool:
@@ -129,10 +145,18 @@ class WorkspaceMonitor:
 
         return has_change
 
+    def get_zone_mask(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        """Get the zone mask, building it from the frame dimensions if needed."""
+        if not self.is_configured:
+            return None
+        self._ensure_mask(frame)
+        return self._zone_mask
+
     def mask_frame(self, frame: np.ndarray) -> np.ndarray:
         """Black out everything outside the pick zone."""
-        if self._zone_mask is None:
+        if not self.is_configured:
             return frame
+        self._ensure_mask(frame)
         masked = frame.copy()
         masked[self._zone_mask == 0] = 0
         return masked
