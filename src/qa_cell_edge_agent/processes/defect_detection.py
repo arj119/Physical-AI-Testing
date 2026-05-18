@@ -16,8 +16,7 @@ import logging
 import queue
 import threading
 import time
-import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 from multiprocessing import Event, Queue
 from typing import Optional
 

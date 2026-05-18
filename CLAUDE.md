@@ -85,14 +85,19 @@ client.ontology.actions.create_inspection_event(..., captured_image_ref=Empty.va
 |------|---------|
 | `config/foundry.py` | SDK client + stream push (separate auth tokens) |
 | `config/settings.py` | All config from env vars, hardware auto-discovery |
+| `config/jetson.py` | TensorRT conversion, Jetson Nano 2GB memory limits |
 | `drivers/connection.py` | Shared MyCobot280 serial singleton |
 | `drivers/discovery.py` | Auto-detect serial port (CP210x VID:PID) and camera |
 | `drivers/arm.py` | Waypoint + Cartesian arm control, pick-and-place |
-| `drivers/transforms.py` | Camera-to-robot coordinate transforms |
+| `drivers/gripper.py` | Claw gripper read/control (servo load, open/close) |
+| `drivers/block_detector.py` | HSV color-based block detection (green/red/unknown) |
+| `drivers/workspace.py` | Pick zone polygon mask, bounds enforcement |
+| `drivers/transforms.py` | Camera-to-robot coordinate transforms (homography) |
 | `fusion/engine.py` | PASS/FAIL/REVIEW decision logic |
 | `models/inference.py` | ONNX/TensorRT/mock inference with hot-swap |
-| `processes/defect_detection.py` | Main loop: inference → fusion → arm → OSDK |
-| `processes/model_upgrade.py` | Poll registry → download → convert → signal reload |
+| `processes/sensor_push.py` | Process 1: camera capture + stream push to Foundry |
+| `processes/defect_detection.py` | Process 2: inference → fusion → arm → OSDK |
+| `processes/model_upgrade.py` | Process 3: poll registry → download → signal reload |
 
 ## Conventions
 
@@ -112,6 +117,10 @@ client.ontology.actions.create_inspection_event(..., captured_image_ref=Empty.va
 | `test_connection.py` | Verify Foundry connectivity. `--seed --count N` for demo data |
 | `calibrate_arm.py` | After verify_hardware — records bin waypoints |
 | `calibrate_camera.py` | For vision-guided picking (optional) |
+| `define_zone.py` | Click 4 corners to define the pick zone polygon |
+| `test_calibration.py` | Interactive tool: test camera→robot mapping, nudge, rotate |
+| `simulate.py` | Run full loop without hardware (live camera + Foundry) |
+| `live_view.py` | Camera display with detection overlay (debugging) |
 | `download_model.py` | Fetch YOLOv5n ONNX for local testing |
 
 ## Deployment (Jetson)

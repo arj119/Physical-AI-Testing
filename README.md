@@ -313,6 +313,10 @@ are auto-discovered when not explicitly set.
 | `CONFIDENCE_THRESHOLD` | `0.75` | Vision confidence floor |
 | `GRIP_TOLERANCE` | `0.65` | Gripper load ceiling for "normal" |
 | `CAPTURE_INTERVAL_SEC` | `1.0` | Camera capture rate (seconds) |
+| `DETECTION_MODE` | `color` | `color` (HSV) or `model` (YOLO + fusion) |
+| `CAMERA_ROTATION_OFFSET` | `0` | Degrees to align camera angle with gripper J6 |
+| `GRIP_HEIGHT_MM` | `88` | Z height for gripping (mm from base) |
+| `APPROACH_HEIGHT_MM` | `160` | Z height for approach above target (mm) |
 
 ## Testing
 
@@ -322,7 +326,7 @@ pytest src/test/ -v
 
 ## Foundry Integration
 
-Uses `physical_ai_qa_cell_sdk` (v0.5.0) — a generated typed Python SDK for
+Uses `physical_ai_qa_cell_sdk` (v0.8.0) — a generated typed Python SDK for
 the QA Cell ontology. All action calls and object queries go through the SDK
 with correct parameter names and type safety.
 
